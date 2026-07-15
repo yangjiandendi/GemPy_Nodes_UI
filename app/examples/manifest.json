@@ -1,0 +1,82 @@
+{
+  "schema_version": "gempy-node-editor-examples-v1",
+  "examples": [
+    {
+      "id": "example_1",
+      "index": 1,
+      "title": "Example 1: two-layer stratigraphy",
+      "description": "series: Strat_Series; extent [0,1000,0,1000,0,1000]",
+      "project_file": "example_1/project.json",
+      "data_files": [
+        "model1_surface_points.csv",
+        "model1_orientations.csv"
+      ]
+    },
+    {
+      "id": "example_2",
+      "index": 2,
+      "title": "Example 2: two-layer stratigraphy",
+      "description": "series: Strat_Series; extent [0,1000,0,1000,0,1000]",
+      "project_file": "example_2/project.json",
+      "data_files": [
+        "model2_surface_points.csv",
+        "model2_orientations.csv"
+      ]
+    },
+    {
+      "id": "example_3",
+      "index": 3,
+      "title": "Example 3: two-layer stratigraphy",
+      "description": "series: Strat_Series; extent [0,1000,0,1000,0,1000]",
+      "project_file": "example_3/project.json",
+      "data_files": [
+        "model3_surface_points.csv",
+        "model3_orientations.csv"
+      ]
+    },
+    {
+      "id": "example_4",
+      "index": 4,
+      "title": "Example 4: two-layer stratigraphy",
+      "description": "series: Strat_Series; extent [0,1000,0,1000,0,1000]",
+      "project_file": "example_4/project.json",
+      "data_files": [
+        "model4_surface_points.csv",
+        "model4_orientations.csv"
+      ]
+    },
+    {
+      "id": "example_5",
+      "index": 5,
+      "title": "Example 5: two-layer fault model",
+      "description": "series: Fault_Series, Strat_Series; fault relations enabled; extent [0,1000,0,1000,0,1000]",
+      "project_file": "example_5/project.json",
+      "data_files": [
+        "model5_surface_points.csv",
+        "model5_orientations.csv"
+      ]
+    },
+    {
+      "id": "example_6",
+      "index": 6,
+      "title": "Example 6: three-layer stratigraphy",
+      "description": "series: Strat_Series1, Strat_Series2; extent [0,1000,0,1000,0,1000]",
+      "project_file": "example_6/project.json",
+      "data_files": [
+        "model6_surface_points.csv",
+        "model6_orientations.csv"
+      ]
+    },
+    {
+      "id": "example_7",
+      "index": 7,
+      "title": "Example 7: three-layer fault model",
+      "description": "series: Fault_Series, Strat_Series1, Strat_Series2; fault relations enabled; extent [0,2500,0,1000,0,1000]",
+      "project_file": "example_7/project.json",
+      "data_files": [
+        "model7_surface_points.csv",
+        "model7_orientations.csv"
+      ]
+    }
+  ]
+}

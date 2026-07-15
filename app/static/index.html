@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GemPy Node Editor</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>GemPy Node Editor</h1>
+      <p>Upload / Kadi → Validate / Preview → GemPy → Voxel / Scalar / Export</p>
+    </div>
+    <div class="top-actions">
+      <button id="btnSaveGraph">Save Graph JSON</button>
+      <button id="btnSaveProject">Save Project JSON</button>
+      <button id="btnSavePortableProject">Save Portable ZIP</button>
+      <button id="btnSaveManifest">Save Run Manifest</button>
+      <label class="file-button">
+        Load Graph JSON
+        <input id="graphFileInput" type="file" accept=".json" />
+      </label>
+      <label class="file-button">
+        Load Portable ZIP
+        <input id="portableProjectInput" type="file" accept=".zip" />
+      </label>
+      <button id="btnClear">Clear</button>
+      <button id="btnRun" class="primary">Run to Selected Node</button>
+      <button id="btnRunAll">Run All</button>
+      <button id="btnStopRun" class="danger" disabled>Stop Run</button>
+      <button id="btnClearCache">Clear Cache</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section>
+        <h2>Examples</h2>
+        <div id="examplesList" class="small-list"></div>
+      </section>
+
+      <section>
+        <h2>Files</h2>
+        <form id="uploadForm" class="upload-box upload-box-folder">
+          <input id="uploadInput" type="file" />
+          <input id="uploadCategoryInput" type="text" list="uploadCategoryOptions" placeholder="Folder / category" value="Uncategorized" />
+          <datalist id="uploadCategoryOptions"></datalist>
+          <button type="submit">Upload</button>
+        </form>
+        <div class="file-actions">
+          <button id="btnRefreshFiles" type="button" class="mini">Refresh</button>
+          <button id="btnCleanupFiles" type="button" class="mini">Clean Missing</button>
+        </div>
+        <div id="uploadList" class="small-list"></div>
+      </section>
+
+      <section>
+        <h2>Nodes</h2>
+        <div id="nodePalette"></div>
+      </section>
+    </aside>
+
+    <section class="canvas-wrap">
+      <div id="canvas" class="canvas">
+        <svg id="edgeSvg" class="edge-svg"></svg>
+      </div>
+      <div id="connectionHint" class="hint hidden"></div>
+    </section>
+
+    <aside class="inspector">
+      <section>
+        <h2>Node Parameters</h2>
+        <div id="inspectorBody" class="empty">Select a node.</div>
+      </section>
+      <section>
+        <h2>Execution Results</h2>
+        <div id="results" class="results empty">Run to the selected node to see results.</div>
+      </section>
+      <section>
+        <h2>Run Log</h2>
+        <div id="runLog" class="run-log empty">No run yet.</div>
+      </section>
+    </aside>
+  </main>
+
+  <script src="https://unpkg.com/vtk.js"></script>
+  <script src="/static/app.js?v=92"></script>
+</body>
+</html>

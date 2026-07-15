@@ -1,0 +1,827 @@
+{
+  "schema_version": "gempy-node-editor-project-v18",
+  "saved_at": "2026-05-19T08:08:33.653Z",
+  "graph": {
+    "nodes": [
+      {
+        "id": "LoadUploadedFile_1",
+        "type": "LoadUploadedFile",
+        "params": {
+          "file_id": "37b442d6-2d41-59ac-96c9-406322349733",
+          "file_type": "auto",
+          "sheet_name": ""
+        },
+        "position": {
+          "x": 145,
+          "y": 73.77777814865112
+        }
+      },
+      {
+        "id": "LoadUploadedFile_2",
+        "type": "LoadUploadedFile",
+        "params": {
+          "file_id": "d2cb0f57-d0f5-57c7-a60b-c494060b384d",
+          "file_type": "auto",
+          "sheet_name": ""
+        },
+        "position": {
+          "x": 141,
+          "y": 307.7777781486511
+        }
+      },
+      {
+        "id": "CreateGemPyModel_3",
+        "type": "CreateGemPyModel",
+        "params": {
+          "project_name": "Hessian 3D",
+          "auto_extent_from_data": true,
+          "extent_padding_percent": 5,
+          "extent_user_overridden": true,
+          "extent": "[0,1000,0,1000,0,1000]",
+          "refinement": 6,
+          "resolution": "",
+          "apply_surface_point_nugget": false,
+          "surface_point_nugget": 0.01
+        },
+        "position": {
+          "x": 499.22222232818604,
+          "y": 215.77777814865112
+        }
+      },
+      {
+        "id": "ConfigureStructuralFrame_4",
+        "type": "ConfigureStructuralFrame",
+        "params": {
+          "anisotropy": "NONE",
+          "mapping_json": "{\n  \"Strat_Series\": [\n    \"rock2\",\n    \"rock1\"\n  ]\n}",
+          "groups_json": "[\n  {\n    \"index\": 0,\n    \"name\": \"Strat_Series\",\n    \"relation\": \"ERODE\"\n  }\n]",
+          "auto_mapping_from_geo_model": true,
+          "auto_groups_from_mapping": true,
+          "mapping_auto_initialized": true,
+          "mapping_user_overridden": true,
+          "groups_user_overridden": false,
+          "fault_relations_json": "{\n  \"enabled\": false,\n  \"relations\": []\n}",
+          "remove_default_formation": true
+        },
+        "position": {
+          "x": 811.222222328186,
+          "y": 231.77777814865112
+        }
+      },
+      {
+        "id": "ComputeGemPyModel_5",
+        "type": "ComputeGemPyModel",
+        "params": {
+          "backend": "PYTORCH",
+          "dtype": "float64",
+          "mesh_extraction": true,
+          "retry_without_mesh_extraction": true
+        },
+        "position": {
+          "x": 1124.1111145019531,
+          "y": 226.55555629730225
+        }
+      },
+      {
+        "id": "PlotGemPy2D_6",
+        "type": "PlotGemPy2D",
+        "params": {
+          "direction": "y",
+          "cell_number": "",
+          "show_data": true,
+          "show_lith": true,
+          "show_boundaries": true,
+          "show_scalar": false,
+          "fallback_array": "lith_block",
+          "reshape": "",
+          "dpi": 160,
+          "file_name": "gempy_2d_plot.png"
+        },
+        "position": {
+          "x": 1457.1111450195312,
+          "y": 115.66666793823242
+        }
+      },
+      {
+        "id": "PlotGemPy3D_7",
+        "type": "PlotGemPy3D",
+        "params": {
+          "show_data": true,
+          "show_lith": true,
+          "show_surfaces": true,
+          "show_topography": true,
+          "show_boundaries": true
+        },
+        "position": {
+          "x": 1455.3333740234375,
+          "y": 373
+        }
+      },
+      {
+        "id": "Visualization_8",
+        "type": "Visualization",
+        "params": {
+          "rows": 15,
+          "mesh_scalars": "auto",
+          "show_edges": false,
+          "generate_thumbnail": true
+        },
+        "position": {
+          "x": 1780.3333740234375,
+          "y": 378
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge_yasay7x_b015mx",
+        "from_node": "LoadUploadedFile_1",
+        "from_port": "table",
+        "to_node": "CreateGemPyModel_3",
+        "to_port": "surface_points"
+      },
+      {
+        "id": "edge_vm8a4z2_b017a1",
+        "from_node": "LoadUploadedFile_2",
+        "from_port": "table",
+        "to_node": "CreateGemPyModel_3",
+        "to_port": "orientations"
+      },
+      {
+        "id": "edge_291ao9g_b01gu1",
+        "from_node": "CreateGemPyModel_3",
+        "from_port": "geo_model",
+        "to_node": "ConfigureStructuralFrame_4",
+        "to_port": "geo_model"
+      },
+      {
+        "id": "edge_jzpasac_b01mf5",
+        "from_node": "ConfigureStructuralFrame_4",
+        "from_port": "geo_model",
+        "to_node": "ComputeGemPyModel_5",
+        "to_port": "geo_model"
+      },
+      {
+        "id": "edge_1fsyu8i_b01rl7",
+        "from_node": "ComputeGemPyModel_5",
+        "from_port": "geo_model",
+        "to_node": "PlotGemPy2D_6",
+        "to_port": "geo_model"
+      },
+      {
+        "id": "edge_7aguppc_b03pjr",
+        "from_node": "ComputeGemPyModel_5",
+        "from_port": "geo_model",
+        "to_node": "PlotGemPy3D_7",
+        "to_port": "geo_model"
+      },
+      {
+        "id": "edge_xb60lzj_b03z25",
+        "from_node": "PlotGemPy3D_7",
+        "from_port": "report",
+        "to_node": "Visualization_8",
+        "to_port": "data"
+      }
+    ]
+  },
+  "uploads": [
+    {
+      "file_id": "c6f491a7-d150-4b3b-86b0-6155ff5d4376",
+      "kind": "upload",
+      "original_name": "2_subbasins_selected.vtk",
+      "stored_name": "c6f491a7-d150-4b3b-86b0-6155ff5d4376_2_subbasins_selected.vtk",
+      "relative_path": "uploads/c6f491a7-d150-4b3b-86b0-6155ff5d4376_2_subbasins_selected.vtk",
+      "exists": true
+    },
+    {
+      "file_id": "c11f2dbb-2658-4320-b836-ae4df75da373",
+      "kind": "upload",
+      "original_name": "GG_orientation_with_fault.csv",
+      "stored_name": "c11f2dbb-2658-4320-b836-ae4df75da373_GG_orientation_with_fault.csv",
+      "relative_path": "uploads/c11f2dbb-2658-4320-b836-ae4df75da373_GG_orientation_with_fault.csv",
+      "exists": true
+    },
+    {
+      "file_id": "5ff09bbb-34af-4886-8cca-63e089ed921b",
+      "kind": "upload",
+      "original_name": "GG_points_with_fault.csv",
+      "stored_name": "5ff09bbb-34af-4886-8cca-63e089ed921b_GG_points_with_fault.csv",
+      "relative_path": "uploads/5ff09bbb-34af-4886-8cca-63e089ed921b_GG_points_with_fault.csv",
+      "exists": true
+    },
+    {
+      "file_id": "a42d3e58-f391-4b58-9241-a5512ee5ea3c",
+      "kind": "upload",
+      "original_name": "PraePerm_normals.xlsx",
+      "stored_name": "a42d3e58-f391-4b58-9241-a5512ee5ea3c_PraePerm_normals.xlsx",
+      "relative_path": "uploads/a42d3e58-f391-4b58-9241-a5512ee5ea3c_PraePerm_normals.xlsx",
+      "exists": true
+    },
+    {
+      "file_id": "a05f0d2a-762b-436d-adcf-815d4d080636",
+      "kind": "upload",
+      "original_name": "PraePerm_vertices.xlsx",
+      "stored_name": "a05f0d2a-762b-436d-adcf-815d4d080636_PraePerm_vertices.xlsx",
+      "relative_path": "uploads/a05f0d2a-762b-436d-adcf-815d4d080636_PraePerm_vertices.xlsx",
+      "exists": true
+    },
+    {
+      "file_id": "a21f2a00-829c-4736-976e-73372efa29ff",
+      "kind": "upload",
+      "original_name": "Zechstein_normals.xlsx",
+      "stored_name": "a21f2a00-829c-4736-976e-73372efa29ff_Zechstein_normals.xlsx",
+      "relative_path": "uploads/a21f2a00-829c-4736-976e-73372efa29ff_Zechstein_normals.xlsx",
+      "exists": true
+    },
+    {
+      "file_id": "65fb52d5-0de7-4bff-a803-0cadf757c059",
+      "kind": "upload",
+      "original_name": "Zechstein_vertices.xlsx",
+      "stored_name": "65fb52d5-0de7-4bff-a803-0cadf757c059_Zechstein_vertices.xlsx",
+      "relative_path": "uploads/65fb52d5-0de7-4bff-a803-0cadf757c059_Zechstein_vertices.xlsx",
+      "exists": true
+    },
+    {
+      "file_id": "b7b4556e-956f-427a-8ca4-bc04a4a3e9fd",
+      "kind": "upload",
+      "original_name": "dem.vtp",
+      "stored_name": "b7b4556e-956f-427a-8ca4-bc04a4a3e9fd_dem.vtp",
+      "relative_path": "uploads/b7b4556e-956f-427a-8ca4-bc04a4a3e9fd_dem.vtp",
+      "exists": true
+    },
+    {
+      "file_id": "ec918f70-bdeb-552f-9109-524cb45e8a4a",
+      "kind": "upload",
+      "original_name": "model1_orientations.csv",
+      "stored_name": "model1_orientations.csv",
+      "relative_path": "uploads/model1_orientations.csv",
+      "exists": true
+    },
+    {
+      "file_id": "9ad938e0-8198-5d3d-ae64-34036b54c95d",
+      "kind": "upload",
+      "original_name": "model1_surface_points.csv",
+      "stored_name": "model1_surface_points.csv",
+      "relative_path": "uploads/model1_surface_points.csv",
+      "exists": true
+    },
+    {
+      "file_id": "f7aed7ff-fa6c-5836-8f02-e3e69f2a4447",
+      "kind": "upload",
+      "original_name": "model2_orientations.csv",
+      "stored_name": "model2_orientations.csv",
+      "relative_path": "uploads/model2_orientations.csv",
+      "exists": true
+    },
+    {
+      "file_id": "dd389e7f-b792-59b1-94fe-c12ba2a0c0a7",
+      "kind": "upload",
+      "original_name": "model2_surface_points.csv",
+      "stored_name": "model2_surface_points.csv",
+      "relative_path": "uploads/model2_surface_points.csv",
+      "exists": true
+    },
+    {
+      "file_id": "b821e6d4-a7a6-5e6d-a186-4f0e77c711f0",
+      "kind": "upload",
+      "original_name": "model3_orientations.csv",
+      "stored_name": "model3_orientations.csv",
+      "relative_path": "uploads/model3_orientations.csv",
+      "exists": true
+    },
+    {
+      "file_id": "e118e821-7aaf-516d-b5f8-cc3b8e04dc5e",
+      "kind": "upload",
+      "original_name": "model3_surface_points.csv",
+      "stored_name": "model3_surface_points.csv",
+      "relative_path": "uploads/model3_surface_points.csv",
+      "exists": true
+    },
+    {
+      "file_id": "d2cb0f57-d0f5-57c7-a60b-c494060b384d",
+      "kind": "upload",
+      "original_name": "model4_orientations.csv",
+      "stored_name": "model4_orientations.csv",
+      "relative_path": "uploads/model4_orientations.csv",
+      "exists": true
+    },
+    {
+      "file_id": "37b442d6-2d41-59ac-96c9-406322349733",
+      "kind": "upload",
+      "original_name": "model4_surface_points.csv",
+      "stored_name": "model4_surface_points.csv",
+      "relative_path": "uploads/model4_surface_points.csv",
+      "exists": true
+    },
+    {
+      "file_id": "b66af826-5b99-5afb-be67-652b84dac60d",
+      "kind": "upload",
+      "original_name": "model5_orientations.csv",
+      "stored_name": "model5_orientations.csv",
+      "relative_path": "uploads/model5_orientations.csv",
+      "exists": true
+    },
+    {
+      "file_id": "6893ba68-979b-5c26-817d-a1a0754df5c0",
+      "kind": "upload",
+      "original_name": "model5_surface_points.csv",
+      "stored_name": "model5_surface_points.csv",
+      "relative_path": "uploads/model5_surface_points.csv",
+      "exists": true
+    },
+    {
+      "file_id": "e9878aff-7fe9-5b02-b65e-c6c1c5523624",
+      "kind": "upload",
+      "original_name": "model6_orientations.csv",
+      "stored_name": "model6_orientations.csv",
+      "relative_path": "uploads/model6_orientations.csv",
+      "exists": true
+    },
+    {
+      "file_id": "9b477ef5-1750-516a-9b60-20fb1c16f03a",
+      "kind": "upload",
+      "original_name": "model6_surface_points.csv",
+      "stored_name": "model6_surface_points.csv",
+      "relative_path": "uploads/model6_surface_points.csv",
+      "exists": true
+    },
+    {
+      "file_id": "11b98026-d540-588a-8efc-396b1cf372f7",
+      "kind": "upload",
+      "original_name": "model7_orientations.csv",
+      "stored_name": "model7_orientations.csv",
+      "relative_path": "uploads/model7_orientations.csv",
+      "exists": true
+    },
+    {
+      "file_id": "8f0d228a-f3f0-5824-b693-bc60bace853b",
+      "kind": "upload",
+      "original_name": "model7_surface_points.csv",
+      "stored_name": "model7_surface_points.csv",
+      "relative_path": "uploads/model7_surface_points.csv",
+      "exists": true
+    },
+    {
+      "file_id": "8209c3b2-45ab-48d5-aa42-bcf9555ca72c",
+      "kind": "upload",
+      "original_name": "test_fault_orientations.csv",
+      "stored_name": "8209c3b2-45ab-48d5-aa42-bcf9555ca72c_test_fault_orientations.csv",
+      "relative_path": "uploads/8209c3b2-45ab-48d5-aa42-bcf9555ca72c_test_fault_orientations.csv",
+      "exists": true
+    },
+    {
+      "file_id": "4f3b8775-62d9-4839-92bc-199950d8766e",
+      "kind": "upload",
+      "original_name": "test_fault_points.csv",
+      "stored_name": "4f3b8775-62d9-4839-92bc-199950d8766e_test_fault_points.csv",
+      "relative_path": "uploads/4f3b8775-62d9-4839-92bc-199950d8766e_test_fault_points.csv",
+      "exists": true
+    }
+  ],
+  "last_manifest": {
+    "schema_version": "v18-run-manifest-1",
+    "run_id": "e5952a06fdc2",
+    "started_at": "2026-05-19T08:08:06+00:00",
+    "finished_at": "2026-05-19T08:08:08+00:00",
+    "duration_ms": 1637.31,
+    "ok": true,
+    "failed_node_id": null,
+    "graph_hash": "110e1522bd0f36e3477ca838f5dd0a593907bbc46799e3c6e7bbdf50b852171b",
+    "node_count": 8,
+    "edge_count": 7,
+    "order": [
+      "LoadUploadedFile_1",
+      "LoadUploadedFile_2",
+      "CreateGemPyModel_3",
+      "ConfigureStructuralFrame_4",
+      "ComputeGemPyModel_5",
+      "PlotGemPy2D_6",
+      "PlotGemPy3D_7",
+      "Visualization_8"
+    ],
+    "executed_order": [
+      "LoadUploadedFile_1",
+      "LoadUploadedFile_2",
+      "CreateGemPyModel_3",
+      "ConfigureStructuralFrame_4",
+      "ComputeGemPyModel_5",
+      "PlotGemPy2D_6",
+      "PlotGemPy3D_7",
+      "Visualization_8"
+    ],
+    "cached_order": [],
+    "nodes": [
+      {
+        "id": "LoadUploadedFile_1",
+        "type": "LoadUploadedFile",
+        "params": {
+          "file_id": "37b442d6-2d41-59ac-96c9-406322349733",
+          "file_type": "auto",
+          "sheet_name": ""
+        }
+      },
+      {
+        "id": "LoadUploadedFile_2",
+        "type": "LoadUploadedFile",
+        "params": {
+          "file_id": "d2cb0f57-d0f5-57c7-a60b-c494060b384d",
+          "file_type": "auto",
+          "sheet_name": ""
+        }
+      },
+      {
+        "id": "CreateGemPyModel_3",
+        "type": "CreateGemPyModel",
+        "params": {
+          "project_name": "Hessian 3D",
+          "auto_extent_from_data": true,
+          "extent_padding_percent": 5,
+          "extent_user_overridden": true,
+          "extent": "[0,1000,0,1000,0,1000]",
+          "refinement": 6,
+          "resolution": "",
+          "apply_surface_point_nugget": false,
+          "surface_point_nugget": 0.01
+        }
+      },
+      {
+        "id": "ConfigureStructuralFrame_4",
+        "type": "ConfigureStructuralFrame",
+        "params": {
+          "anisotropy": "NONE",
+          "mapping_json": "{\n  \"Strat_Series\": [\n    \"rock2\",\n    \"rock1\"\n  ]\n}",
+          "groups_json": "[\n  {\n    \"index\": 0,\n    \"name\": \"Strat_Series\",\n    \"relation\": \"ERODE\"\n  }\n]",
+          "auto_mapping_from_geo_model": true,
+          "auto_groups_from_mapping": true,
+          "mapping_auto_initialized": true,
+          "mapping_user_overridden": true,
+          "groups_user_overridden": false,
+          "fault_relations_json": "{\n  \"enabled\": false,\n  \"relations\": []\n}",
+          "remove_default_formation": true
+        }
+      },
+      {
+        "id": "ComputeGemPyModel_5",
+        "type": "ComputeGemPyModel",
+        "params": {
+          "backend": "PYTORCH",
+          "dtype": "float64",
+          "mesh_extraction": true,
+          "retry_without_mesh_extraction": true
+        }
+      },
+      {
+        "id": "PlotGemPy2D_6",
+        "type": "PlotGemPy2D",
+        "params": {
+          "direction": "y",
+          "cell_number": "",
+          "show_data": true,
+          "show_lith": true,
+          "show_boundaries": true,
+          "show_scalar": false,
+          "fallback_array": "lith_block",
+          "reshape": "",
+          "dpi": 160,
+          "file_name": "gempy_2d_plot.png"
+        }
+      },
+      {
+        "id": "PlotGemPy3D_7",
+        "type": "PlotGemPy3D",
+        "params": {
+          "show_data": true,
+          "show_lith": true,
+          "show_surfaces": true,
+          "show_topography": true,
+          "show_boundaries": true
+        }
+      },
+      {
+        "id": "Visualization_8",
+        "type": "Visualization",
+        "params": {
+          "rows": 15,
+          "mesh_scalars": "auto",
+          "show_edges": false,
+          "generate_thumbnail": true
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge_yasay7x_b015mx",
+        "from_node": "LoadUploadedFile_1",
+        "from_port": "table",
+        "to_node": "CreateGemPyModel_3",
+        "to_port": "surface_points"
+      },
+      {
+        "id": "edge_vm8a4z2_b017a1",
+        "from_node": "LoadUploadedFile_2",
+        "from_port": "table",
+        "to_node": "CreateGemPyModel_3",
+        "to_port": "orientations"
+      },
+      {
+        "id": "edge_291ao9g_b01gu1",
+        "from_node": "CreateGemPyModel_3",
+        "from_port": "geo_model",
+        "to_node": "ConfigureStructuralFrame_4",
+        "to_port": "geo_model"
+      },
+      {
+        "id": "edge_jzpasac_b01mf5",
+        "from_node": "ConfigureStructuralFrame_4",
+        "from_port": "geo_model",
+        "to_node": "ComputeGemPyModel_5",
+        "to_port": "geo_model"
+      },
+      {
+        "id": "edge_1fsyu8i_b01rl7",
+        "from_node": "ComputeGemPyModel_5",
+        "from_port": "geo_model",
+        "to_node": "PlotGemPy2D_6",
+        "to_port": "geo_model"
+      },
+      {
+        "id": "edge_7aguppc_b03pjr",
+        "from_node": "ComputeGemPyModel_5",
+        "from_port": "geo_model",
+        "to_node": "PlotGemPy3D_7",
+        "to_port": "geo_model"
+      },
+      {
+        "id": "edge_xb60lzj_b03z25",
+        "from_node": "PlotGemPy3D_7",
+        "from_port": "report",
+        "to_node": "Visualization_8",
+        "to_port": "data"
+      }
+    ],
+    "node_statuses": {
+      "LoadUploadedFile_1": {
+        "status": "done",
+        "type": "LoadUploadedFile",
+        "title": "Load Uploaded File",
+        "cached": false,
+        "duration_ms": 205.38,
+        "signature": "340fe9ba0ae5029757409790c400f17951b662a6ae06480017401af7692ba741"
+      },
+      "LoadUploadedFile_2": {
+        "status": "done",
+        "type": "LoadUploadedFile",
+        "title": "Load Uploaded File",
+        "cached": false,
+        "duration_ms": 181.95,
+        "signature": "4a8c0efe72f32a9aeb7ab2a9e8ec80ffbd810771d06f6bd1bcb337a9dbf204c4"
+      },
+      "CreateGemPyModel_3": {
+        "status": "done",
+        "type": "CreateGemPyModel",
+        "title": "Create GemPy Model",
+        "cached": false,
+        "duration_ms": 31.91,
+        "signature": "1dbd7a77d2c0f94abb890334e903cb5dbc091781bd1a75b8784cbc0a528e1d24"
+      },
+      "ConfigureStructuralFrame_4": {
+        "status": "done",
+        "type": "ConfigureStructuralFrame",
+        "title": "Configure Structural Frame",
+        "cached": false,
+        "duration_ms": 0.14,
+        "signature": "5cd9f55a619be4e3512f8e70e6a2c266d3f34860b590fb8130b45c0c1886dcf8"
+      },
+      "ComputeGemPyModel_5": {
+        "status": "done",
+        "type": "ComputeGemPyModel",
+        "title": "Compute GemPy Model",
+        "cached": false,
+        "duration_ms": 1039.84,
+        "signature": "4b01621cb2b2fb90c2abe58acaec36cd4108215e304137868eef4bc47aaf486a"
+      },
+      "PlotGemPy2D_6": {
+        "status": "done",
+        "type": "PlotGemPy2D",
+        "title": "Plot GemPy 2D",
+        "cached": false,
+        "duration_ms": 176.87,
+        "signature": "a20c471ba6a59a0cdf1a5e4d2deb5ddc0a0d0409371ddb9ba8a3232c4d13a1bc"
+      },
+      "PlotGemPy3D_7": {
+        "status": "done",
+        "type": "PlotGemPy3D",
+        "title": "Plot GemPy 3D",
+        "cached": false,
+        "duration_ms": 0.04,
+        "signature": "b7e5f75ffa98d66ca59f54c177620196e4493610c4f511d9554d68afad1a2aea"
+      },
+      "Visualization_8": {
+        "status": "done",
+        "type": "Visualization",
+        "title": "Visualization",
+        "cached": false,
+        "duration_ms": 0.01,
+        "signature": "91e844a366d6796f2708658622eb4ad70c3ce9a3167b43461e2207d10725495c"
+      }
+    },
+    "run_log": [
+      {
+        "node_id": "LoadUploadedFile_1",
+        "title": "Load Uploaded File",
+        "type": "LoadUploadedFile",
+        "status": "done",
+        "duration_ms": 205.38,
+        "signature": "340fe9ba0ae5029757409790c400f17951b662a6ae06480017401af7692ba741"
+      },
+      {
+        "node_id": "LoadUploadedFile_2",
+        "title": "Load Uploaded File",
+        "type": "LoadUploadedFile",
+        "status": "done",
+        "duration_ms": 181.95,
+        "signature": "4a8c0efe72f32a9aeb7ab2a9e8ec80ffbd810771d06f6bd1bcb337a9dbf204c4"
+      },
+      {
+        "node_id": "CreateGemPyModel_3",
+        "title": "Create GemPy Model",
+        "type": "CreateGemPyModel",
+        "status": "done",
+        "duration_ms": 31.91,
+        "signature": "1dbd7a77d2c0f94abb890334e903cb5dbc091781bd1a75b8784cbc0a528e1d24"
+      },
+      {
+        "node_id": "ConfigureStructuralFrame_4",
+        "title": "Configure Structural Frame",
+        "type": "ConfigureStructuralFrame",
+        "status": "done",
+        "duration_ms": 0.14,
+        "signature": "5cd9f55a619be4e3512f8e70e6a2c266d3f34860b590fb8130b45c0c1886dcf8"
+      },
+      {
+        "node_id": "ComputeGemPyModel_5",
+        "title": "Compute GemPy Model",
+        "type": "ComputeGemPyModel",
+        "status": "done",
+        "duration_ms": 1039.84,
+        "signature": "4b01621cb2b2fb90c2abe58acaec36cd4108215e304137868eef4bc47aaf486a"
+      },
+      {
+        "node_id": "PlotGemPy2D_6",
+        "title": "Plot GemPy 2D",
+        "type": "PlotGemPy2D",
+        "status": "done",
+        "duration_ms": 176.87,
+        "signature": "a20c471ba6a59a0cdf1a5e4d2deb5ddc0a0d0409371ddb9ba8a3232c4d13a1bc"
+      },
+      {
+        "node_id": "PlotGemPy3D_7",
+        "title": "Plot GemPy 3D",
+        "type": "PlotGemPy3D",
+        "status": "done",
+        "duration_ms": 0.04,
+        "signature": "b7e5f75ffa98d66ca59f54c177620196e4493610c4f511d9554d68afad1a2aea"
+      },
+      {
+        "node_id": "Visualization_8",
+        "title": "Visualization",
+        "type": "Visualization",
+        "status": "done",
+        "duration_ms": 0.01,
+        "signature": "91e844a366d6796f2708658622eb4ad70c3ce9a3167b43461e2207d10725495c"
+      }
+    ]
+  },
+  "last_run_log": [
+    {
+      "node_id": "LoadUploadedFile_1",
+      "title": "Load Uploaded File",
+      "type": "LoadUploadedFile",
+      "status": "done",
+      "duration_ms": 205.38,
+      "signature": "340fe9ba0ae5029757409790c400f17951b662a6ae06480017401af7692ba741"
+    },
+    {
+      "node_id": "LoadUploadedFile_2",
+      "title": "Load Uploaded File",
+      "type": "LoadUploadedFile",
+      "status": "done",
+      "duration_ms": 181.95,
+      "signature": "4a8c0efe72f32a9aeb7ab2a9e8ec80ffbd810771d06f6bd1bcb337a9dbf204c4"
+    },
+    {
+      "node_id": "CreateGemPyModel_3",
+      "title": "Create GemPy Model",
+      "type": "CreateGemPyModel",
+      "status": "done",
+      "duration_ms": 31.91,
+      "signature": "1dbd7a77d2c0f94abb890334e903cb5dbc091781bd1a75b8784cbc0a528e1d24"
+    },
+    {
+      "node_id": "ConfigureStructuralFrame_4",
+      "title": "Configure Structural Frame",
+      "type": "ConfigureStructuralFrame",
+      "status": "done",
+      "duration_ms": 0.14,
+      "signature": "5cd9f55a619be4e3512f8e70e6a2c266d3f34860b590fb8130b45c0c1886dcf8"
+    },
+    {
+      "node_id": "ComputeGemPyModel_5",
+      "title": "Compute GemPy Model",
+      "type": "ComputeGemPyModel",
+      "status": "done",
+      "duration_ms": 1039.84,
+      "signature": "4b01621cb2b2fb90c2abe58acaec36cd4108215e304137868eef4bc47aaf486a"
+    },
+    {
+      "node_id": "PlotGemPy2D_6",
+      "title": "Plot GemPy 2D",
+      "type": "PlotGemPy2D",
+      "status": "done",
+      "duration_ms": 176.87,
+      "signature": "a20c471ba6a59a0cdf1a5e4d2deb5ddc0a0d0409371ddb9ba8a3232c4d13a1bc"
+    },
+    {
+      "node_id": "PlotGemPy3D_7",
+      "title": "Plot GemPy 3D",
+      "type": "PlotGemPy3D",
+      "status": "done",
+      "duration_ms": 0.04,
+      "signature": "b7e5f75ffa98d66ca59f54c177620196e4493610c4f511d9554d68afad1a2aea"
+    },
+    {
+      "node_id": "Visualization_8",
+      "title": "Visualization",
+      "type": "Visualization",
+      "status": "done",
+      "duration_ms": 0.01,
+      "signature": "91e844a366d6796f2708658622eb4ad70c3ce9a3167b43461e2207d10725495c"
+    }
+  ],
+  "node_statuses": {
+    "LoadUploadedFile_1": {
+      "status": "done",
+      "type": "LoadUploadedFile",
+      "title": "Load Uploaded File",
+      "cached": false,
+      "duration_ms": 205.38,
+      "signature": "340fe9ba0ae5029757409790c400f17951b662a6ae06480017401af7692ba741"
+    },
+    "LoadUploadedFile_2": {
+      "status": "done",
+      "type": "LoadUploadedFile",
+      "title": "Load Uploaded File",
+      "cached": false,
+      "duration_ms": 181.95,
+      "signature": "4a8c0efe72f32a9aeb7ab2a9e8ec80ffbd810771d06f6bd1bcb337a9dbf204c4"
+    },
+    "CreateGemPyModel_3": {
+      "status": "done",
+      "type": "CreateGemPyModel",
+      "title": "Create GemPy Model",
+      "cached": false,
+      "duration_ms": 31.91,
+      "signature": "1dbd7a77d2c0f94abb890334e903cb5dbc091781bd1a75b8784cbc0a528e1d24"
+    },
+    "ConfigureStructuralFrame_4": {
+      "status": "done",
+      "type": "ConfigureStructuralFrame",
+      "title": "Configure Structural Frame",
+      "cached": false,
+      "duration_ms": 0.14,
+      "signature": "5cd9f55a619be4e3512f8e70e6a2c266d3f34860b590fb8130b45c0c1886dcf8"
+    },
+    "ComputeGemPyModel_5": {
+      "status": "done",
+      "type": "ComputeGemPyModel",
+      "title": "Compute GemPy Model",
+      "cached": false,
+      "duration_ms": 1039.84,
+      "signature": "4b01621cb2b2fb90c2abe58acaec36cd4108215e304137868eef4bc47aaf486a"
+    },
+    "PlotGemPy2D_6": {
+      "status": "done",
+      "type": "PlotGemPy2D",
+      "title": "Plot GemPy 2D",
+      "cached": false,
+      "duration_ms": 176.87,
+      "signature": "a20c471ba6a59a0cdf1a5e4d2deb5ddc0a0d0409371ddb9ba8a3232c4d13a1bc"
+    },
+    "PlotGemPy3D_7": {
+      "status": "done",
+      "type": "PlotGemPy3D",
+      "title": "Plot GemPy 3D",
+      "cached": false,
+      "duration_ms": 0.04,
+      "signature": "b7e5f75ffa98d66ca59f54c177620196e4493610c4f511d9554d68afad1a2aea"
+    },
+    "Visualization_8": {
+      "status": "done",
+      "type": "Visualization",
+      "title": "Visualization",
+      "cached": false,
+      "duration_ms": 0.01,
+      "signature": "91e844a366d6796f2708658622eb4ad70c3ce9a3167b43461e2207d10725495c"
+    }
+  }
+}
