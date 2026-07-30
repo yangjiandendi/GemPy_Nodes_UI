@@ -4939,6 +4939,152 @@ async function savePortableProjectZip() {
   }
 }
 
+
+function responseDownloadFilename(response, fallback) {
+  const contentDisposition = response.headers.get('Content-Disposition') || '';
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    try { return decodeURIComponent(utf8Match[1].replace(/^"|"$/g, '')); } catch (_) {}
+  }
+  const plainMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return plainMatch ? plainMatch[1] : fallback;
+}
+
+function openNotebookExportDialog() {
+  if (!state.nodes.length) {
+    alert('The workflow is empty. Add nodes before exporting a notebook.');
+    return;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'web-vtk-modal-overlay';
+  overlay.innerHTML = `
+    <div class="web-vtk-modal notebook-export-modal">
+      <div class="web-vtk-modal-header">
+        <b>Export Workflow as Jupyter Notebook</b>
+        <button type="button" class="mini" data-action="close">Close</button>
+      </div>
+      <div class="notebook-export-body">
+        <p>The exported notebook contains normal Python functions and direct pandas, GemPy and PyVista calls. It does not run the node-editor runtime inside Jupyter.</p>
+
+        <label>
+          <span>Export scope</span>
+          <select data-field="scope">
+            <option value="entire">Entire workflow</option>
+            <option value="selected_upstream">Selected node and its upstream workflow</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Export format</span>
+          <select data-field="package_mode">
+            <option value="portable_zip">Portable ZIP: notebook + inputs + requirements</option>
+            <option value="ipynb">Notebook only (.ipynb)</option>
+          </select>
+        </label>
+
+        <label class="notebook-export-check">
+          <input type="checkbox" data-field="include_inputs" checked />
+          <span>Include referenced uploaded input files in portable ZIP</span>
+        </label>
+        <label class="notebook-export-check">
+          <input type="checkbox" data-field="include_requirements" checked />
+          <span>Include requirements.txt</span>
+        </label>
+        <label class="notebook-export-check">
+          <input type="checkbox" data-field="include_workflow_json" checked />
+          <span>Include original workflow JSON</span>
+        </label>
+
+        <div class="notebook-export-note">
+          For notebook-only export, referenced files must be placed manually in an <code>inputs/</code> folder next to the notebook.
+          KADI credentials and external OGS executable paths are never embedded as secrets.
+        </div>
+
+        <div class="notebook-export-actions">
+          <button type="button" data-action="cancel">Cancel</button>
+          <button type="button" class="primary" data-action="export">Export</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const close = () => overlay.remove();
+  overlay.querySelector('[data-action="close"]').onclick = close;
+  overlay.querySelector('[data-action="cancel"]').onclick = close;
+  overlay.addEventListener('click', ev => {
+    if (ev.target === overlay) close();
+  });
+
+  const packageSelect = overlay.querySelector('[data-field="package_mode"]');
+  const requirementsCheckbox = overlay.querySelector('[data-field="include_requirements"]');
+  packageSelect.addEventListener('change', () => {
+    requirementsCheckbox.disabled = packageSelect.value === 'ipynb';
+  });
+
+  overlay.querySelector('[data-action="export"]').onclick = async () => {
+    const scope = overlay.querySelector('[data-field="scope"]').value;
+    const packageMode = packageSelect.value;
+    let nodeIds = null;
+
+    if (scope === 'selected_upstream') {
+      if (!state.selectedNodeId) {
+        alert('Select a node before exporting the selected upstream workflow.');
+        return;
+      }
+      nodeIds = upstreamNodeIds(state.selectedNodeId);
+      if (!nodeIds.length) {
+        alert('The selected upstream workflow is empty.');
+        return;
+      }
+    }
+
+    const project = {
+      schema_version: 'gempy-node-editor-notebook-export-v1',
+      saved_at: new Date().toISOString(),
+      graph: graphPayload(nodeIds),
+      uploads: state.uploads,
+      custom_workflows: state.workflowTemplates || [],
+    };
+    const options = {
+      package_mode: packageMode,
+      include_inputs: overlay.querySelector('[data-field="include_inputs"]').checked,
+      include_requirements: requirementsCheckbox.checked,
+      include_workflow_json: overlay.querySelector('[data-field="include_workflow_json"]').checked,
+    };
+
+    const exportButton = overlay.querySelector('[data-action="export"]');
+    exportButton.disabled = true;
+    exportButton.textContent = 'Generating…';
+
+    try {
+      const response = await fetch('/api/notebook/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project, options }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const blob = await response.blob();
+      const fallback = packageMode === 'ipynb'
+        ? 'gempy_workflow_standalone.ipynb'
+        : 'gempy_workflow_standalone_notebook.zip';
+      const filename = responseDownloadFilename(response, fallback);
+      await saveBlobAs(filename, blob, {
+        types: packageMode === 'ipynb'
+          ? [{ description: 'Jupyter Notebook', accept: { 'application/x-ipynb+json': ['.ipynb'] } }]
+          : [{ description: 'Portable Notebook ZIP', accept: { 'application/zip': ['.zip'] } }],
+      });
+      close();
+    } catch (err) {
+      alert(String(err));
+      exportButton.disabled = false;
+      exportButton.textContent = 'Export';
+    }
+  };
+
+  document.body.appendChild(overlay);
+}
+
 async function loadPortableProjectZip(file) {
   if (!file) return;
   const fd = new FormData();
@@ -5073,6 +5219,734 @@ function cssEscape(v) {
   return String(v).replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+
+function workflowExportFilename(ext) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `workflow_${stamp}.${ext}`;
+}
+
+function promptWorkflowBackgroundMode(defaultMode='dark') {
+  const raw = prompt(
+    'Background mode: dark / white / transparent',
+    defaultMode
+  );
+  if (raw === null) return null;
+  const value = String(raw || '').trim().toLowerCase();
+  if (['transparent', 'trans', 'alpha', 'none'].includes(value)) return 'transparent';
+  if (['white', 'light'].includes(value)) return 'white';
+  return 'dark';
+}
+
+function workflowBackgroundSpec(mode='dark') {
+  if (mode === 'transparent') {
+    return {
+      mode,
+      background: null,
+      dotColor: null,
+      edgeColor: '#67e8f9',
+      nodeText: '#e5e7eb',
+      mutedText: '#94a3b8',
+    };
+  }
+  if (mode === 'white') {
+    return {
+      mode,
+      background: '#ffffff',
+      dotColor: 'rgba(148,163,184,0.28)',
+      edgeColor: '#0891b2',
+      nodeText: '#e5e7eb',
+      mutedText: '#94a3b8',
+    };
+  }
+  return {
+    mode: 'dark',
+    background: '#0f172a',
+    dotColor: 'rgba(148,163,184,0.2)',
+    edgeColor: '#67e8f9',
+    nodeText: '#e5e7eb',
+    mutedText: '#94a3b8',
+  };
+}
+
+function workflowExportBounds(padding=80) {
+  const nodeEls = [...canvas.querySelectorAll('.node')];
+  if (!nodeEls.length) throw new Error('There are no nodes to export.');
+
+  const nodes = nodeEls.map(nodeEl => {
+    const left = parseFloat(nodeEl.style.left || '0');
+    const top = parseFloat(nodeEl.style.top || '0');
+    const width = Math.max(nodeEl.offsetWidth || 0, 250);
+    const height = Math.max(nodeEl.offsetHeight || 0, 84);
+    return {
+      id: nodeEl.dataset.nodeId || '',
+      x: left,
+      y: top,
+      width,
+      height,
+      html: nodeEl.outerHTML,
+      element: nodeEl,
+    };
+  });
+
+  const minX = Math.min(...nodes.map(n => n.x));
+  const minY = Math.min(...nodes.map(n => n.y));
+  const maxX = Math.max(...nodes.map(n => n.x + n.width));
+  const maxY = Math.max(...nodes.map(n => n.y + n.height));
+
+  return {
+    nodes,
+    minX,
+    minY,
+    maxX,
+    maxY,
+    padding,
+    width: Math.ceil((maxX - minX) + padding * 2),
+    height: Math.ceil((maxY - minY) + padding * 2),
+  };
+}
+
+function workflowExportCss() {
+  return `
+    .export-root, .export-root * { box-sizing: border-box; }
+    .export-root {
+      width: 100%;
+      height: 100%;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #e5e7eb;
+    }
+    .node {
+      position: relative;
+      width: 250px;
+      min-height: 84px;
+      background: linear-gradient(180deg, #172033, #0b1220);
+      border: 1px solid #334155;
+      border-radius: 14px;
+      box-shadow: 0 12px 28px rgba(0,0,0,0.35);
+      user-select: none;
+      overflow: hidden;
+    }
+    .node.selected { outline: 2px solid #38bdf8; outline-offset: 0; }
+    .node.done { box-shadow: 0 0 0 1px rgba(33, 186, 115, 0.32), 0 8px 22px rgba(0,0,0,0.22); }
+    .node.cached { box-shadow: 0 0 0 1px rgba(84, 161, 255, 0.35), 0 8px 22px rgba(0,0,0,0.22); }
+    .node.running { box-shadow: 0 0 0 1px rgba(255, 194, 82, 0.55), 0 8px 22px rgba(0,0,0,0.22); }
+    .node.failed { box-shadow: 0 0 0 1px rgba(255, 91, 91, 0.65), 0 8px 22px rgba(0,0,0,0.22); }
+    .node-header {
+      position: relative;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(148,163,184,0.18);
+    }
+    .node-title { font-size: 13px; font-weight: 800; }
+    .node-type { font-size: 10px; color: #94a3b8; margin-top: 2px; }
+    .node-body { padding: 8px 0 10px; }
+    .node-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+      padding: 6px 10px 10px;
+    }
+    .node-actions button {
+      border: 1px solid #334155;
+      background: #182235;
+      color: #e5e7eb;
+      padding: 4px 7px;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+    .node-actions button.danger {
+      color: #fff;
+      background: #9f1239;
+      border-color: #fb7185;
+    }
+    .port-row {
+      display: flex;
+      align-items: center;
+      min-height: 25px;
+      padding: 2px 10px;
+      gap: 6px;
+      font-size: 11px;
+      color: #cbd5e1;
+    }
+    .port-row.output { justify-content: flex-end; }
+    .port-dot {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      border: 2px solid #475569;
+      background: #020617;
+      flex: 0 0 auto;
+    }
+    .port-dot.output { border-color: #38bdf8; }
+    .port-dot.input { border-color: #22c55e; }
+    .port-dot.active { box-shadow: 0 0 0 4px rgba(56, 189, 248, .25); }
+    .port-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .port-kind { color: #94a3b8; margin-left: auto; font-size: 10px; }
+    .output .port-kind { margin-left: 0; margin-right: auto; }
+    .node-status {
+      display: inline-block;
+      margin-left: auto;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      line-height: 1.2;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.08);
+      color: #d0d7e2;
+      max-width: 82px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .node-status.done { background: rgba(33, 186, 115, 0.18); color: #7dffbf; }
+    .node-status.cached { background: rgba(84, 161, 255, 0.18); color: #a8ccff; }
+    .node-status.running { background: rgba(255, 194, 82, 0.18); color: #ffe0a1; }
+    .node-status.failed { background: rgba(255, 91, 91, 0.18); color: #ffb1b1; }
+    .edge-path {
+      fill: none;
+      stroke: #67e8f9;
+      stroke-width: 2.3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 0 3px rgba(103,232,249,.25));
+    }
+  `;
+}
+
+function normalizeExportNodeHtml(html) {
+  return String(html || '')
+    .replace(/\sstyle="[^"]*left:[^"]*"/g, (m) => {
+      const cleaned = m
+        .replace(/left\s*:\s*[^;]+;?/g, '')
+        .replace(/top\s*:\s*[^;]+;?/g, '')
+        .replace(/\sstyle="\s*"/, '');
+      return cleaned;
+    })
+    .replace(/\sstyle='[^']*left:[^']*'/g, '')
+    .replace(/\sdata-node-id="[^"]*"/g, '');
+}
+
+function drawWorkflowGrid(ctx, width, height, mode='dark') {
+  const spec = workflowBackgroundSpec(mode);
+  if (spec.background) {
+    ctx.fillStyle = spec.background;
+    ctx.fillRect(0, 0, width, height);
+  }
+  if (!spec.dotColor) return;
+  ctx.save();
+  ctx.fillStyle = spec.dotColor;
+  for (let y = 1; y < height; y += 24) {
+    for (let x = 1; x < width; x += 24) {
+      ctx.beginPath();
+      ctx.arc(x, y, 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function nodeStatusColors(status) {
+  if (status === 'done') return { borderGlow: 'rgba(33, 186, 115, 0.32)', badgeBg: 'rgba(33, 186, 115, 0.18)', badgeText: '#7dffbf' };
+  if (status === 'cached') return { borderGlow: 'rgba(84, 161, 255, 0.35)', badgeBg: 'rgba(84, 161, 255, 0.18)', badgeText: '#a8ccff' };
+  if (status === 'running') return { borderGlow: 'rgba(255, 194, 82, 0.55)', badgeBg: 'rgba(255, 194, 82, 0.18)', badgeText: '#ffe0a1' };
+  if (status === 'failed') return { borderGlow: 'rgba(255, 91, 91, 0.65)', badgeBg: 'rgba(255, 91, 91, 0.18)', badgeText: '#ffb1b1' };
+  return { borderGlow: 'rgba(0,0,0,0)', badgeBg: 'rgba(255,255,255,0.08)', badgeText: '#d0d7e2' };
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function drawRoundedRect(ctx, x, y, w, h, r, fillStyle, strokeStyle, lineWidth=1) {
+  roundRectPath(ctx, x, y, w, h, r);
+  if (fillStyle) {
+    ctx.fillStyle = fillStyle;
+    ctx.fill();
+  }
+  if (strokeStyle) {
+    ctx.strokeStyle = strokeStyle;
+    ctx.lineWidth = lineWidth;
+    ctx.stroke();
+  }
+}
+
+function fitText(ctx, text, maxWidth) {
+  const s = String(text ?? '');
+  if (ctx.measureText(s).width <= maxWidth) return s;
+  let out = s;
+  while (out.length > 1 && ctx.measureText(out + '…').width > maxWidth) out = out.slice(0, -1);
+  return out + '…';
+}
+
+function drawNodeButton(ctx, x, y, w, h, text, options={}) {
+  drawRoundedRect(ctx, x, y, w, h, 7, options.fill || '#182235', options.stroke || '#334155', 1);
+  ctx.fillStyle = options.text || '#e5e7eb';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + h / 2 + 0.5);
+}
+
+
+function exportLocalRect(element, rootRect) {
+  const r = element.getBoundingClientRect();
+  return {
+    x: r.left - rootRect.left,
+    y: r.top - rootRect.top,
+    width: r.width,
+    height: r.height,
+    right: r.right - rootRect.left,
+    bottom: r.bottom - rootRect.top,
+  };
+}
+
+function exportElementFont(element) {
+  const cs = getComputedStyle(element);
+  if (cs.font && cs.font !== '') return cs.font;
+  return `${cs.fontStyle || 'normal'} ${cs.fontWeight || '400'} ${cs.fontSize || '12px'} ${cs.fontFamily || 'sans-serif'}`;
+}
+
+function drawExportElementText(ctx, element, rootRect, nodeX, nodeY, options={}) {
+  if (!element) return;
+  const text = String(element.textContent || '').trim();
+  if (!text) return;
+  const r = exportLocalRect(element, rootRect);
+  const cs = getComputedStyle(element);
+  const padLeft = Number(options.padLeft || 0);
+  const padRight = Number(options.padRight || 0);
+  if (r.height <= 0) return;
+
+  ctx.save();
+  ctx.font = exportElementFont(element);
+  ctx.fillStyle = options.color || cs.color || '#e5e7eb';
+  ctx.textBaseline = 'middle';
+
+  const align = options.align || cs.textAlign || 'left';
+  if (align === 'right' || align === 'end') {
+    ctx.textAlign = 'right';
+    ctx.fillText(text, nodeX + r.right - padRight, nodeY + r.y + r.height / 2);
+  } else if (align === 'center') {
+    ctx.textAlign = 'center';
+    ctx.fillText(text, nodeX + r.x + r.width / 2, nodeY + r.y + r.height / 2);
+  } else {
+    ctx.textAlign = 'left';
+    ctx.fillText(text, nodeX + r.x + padLeft, nodeY + r.y + r.height / 2);
+  }
+  ctx.restore();
+}
+
+function drawExportDomButton(ctx, button, rootRect, nodeX, nodeY) {
+  if (!button) return;
+  const r = exportLocalRect(button, rootRect);
+  const cs = getComputedStyle(button);
+  const radius = Math.max(0, parseFloat(cs.borderTopLeftRadius) || 7);
+  drawRoundedRect(
+    ctx,
+    nodeX + r.x,
+    nodeY + r.y,
+    r.width,
+    r.height,
+    radius,
+    cs.backgroundColor || '#182235',
+    cs.borderColor || '#334155',
+    Math.max(1, parseFloat(cs.borderTopWidth) || 1),
+  );
+  drawExportElementText(ctx, button, rootRect, nodeX, nodeY, { align: 'center', color: cs.color });
+}
+
+function drawWorkflowNodeToCanvas(ctx, nodeInfo, exportInfo) {
+  const nodeEl = nodeInfo.element;
+  if (!nodeEl) return;
+  const rootRect = nodeEl.getBoundingClientRect();
+  const x = nodeInfo.x + exportInfo.padding - exportInfo.minX;
+  const y = nodeInfo.y + exportInfo.padding - exportInfo.minY;
+  const w = nodeInfo.width;
+  const h = nodeInfo.height;
+  const nodeCs = getComputedStyle(nodeEl);
+  const status = nodeStatus(nodeInfo.id)?.status || 'idle';
+  const statusColors = nodeStatusColors(status);
+
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.35)';
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 8;
+  const grad = ctx.createLinearGradient(x, y, x, y + h);
+  grad.addColorStop(0, '#172033');
+  grad.addColorStop(1, '#0b1220');
+  drawRoundedRect(ctx, x, y, w, h, parseFloat(nodeCs.borderTopLeftRadius) || 14, grad, '#334155', 1);
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+
+  if (status !== 'idle') {
+    drawRoundedRect(ctx, x + 1, y + 1, w - 2, h - 2, 13, null, statusColors.borderGlow, 1.5);
+  }
+  if ((state.selectedNodeIds || []).includes(nodeInfo.id)) {
+    drawRoundedRect(ctx, x - 1, y - 1, w + 2, h + 2, 15, null, '#38bdf8', 2);
+  }
+
+  const header = nodeEl.querySelector('.node-header');
+  if (header) {
+    const hr = exportLocalRect(header, rootRect);
+    ctx.strokeStyle = 'rgba(148,163,184,0.18)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y + hr.bottom);
+    ctx.lineTo(x + w, y + hr.bottom);
+    ctx.stroke();
+  }
+
+  const title = nodeEl.querySelector('.node-title');
+  const type = nodeEl.querySelector('.node-type');
+  const statusEl = nodeEl.querySelector('.node-status');
+  drawExportElementText(ctx, title, rootRect, x, y);
+  drawExportElementText(ctx, type, rootRect, x, y);
+
+  if (statusEl) {
+    const sr = exportLocalRect(statusEl, rootRect);
+    const scs = getComputedStyle(statusEl);
+    drawRoundedRect(
+      ctx,
+      x + sr.x,
+      y + sr.y,
+      sr.width,
+      sr.height,
+      Math.max(0, parseFloat(scs.borderTopLeftRadius) || 999),
+      scs.backgroundColor || statusColors.badgeBg,
+      scs.borderColor || 'rgba(255,255,255,0.15)',
+      Math.max(1, parseFloat(scs.borderTopWidth) || 1),
+    );
+    drawExportElementText(ctx, statusEl, rootRect, x, y, { align: 'center', color: scs.color || statusColors.badgeText });
+  }
+
+  for (const row of nodeEl.querySelectorAll('.port-row')) {
+    const dot = row.querySelector('.port-dot');
+    const label = row.querySelector('.port-label');
+    const kind = row.querySelector('.port-kind');
+
+    if (dot) {
+      const dr = exportLocalRect(dot, rootRect);
+      const dcs = getComputedStyle(dot);
+      const cx = x + dr.x + dr.width / 2;
+      const cy = y + dr.y + dr.height / 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, Math.max(1, dr.width / 2 - 1), 0, Math.PI * 2);
+      ctx.fillStyle = dcs.backgroundColor || '#020617';
+      ctx.fill();
+      ctx.strokeStyle = dcs.borderColor || (dot.classList.contains('output') ? '#38bdf8' : '#22c55e');
+      ctx.lineWidth = Math.max(1, parseFloat(dcs.borderTopWidth) || 2);
+      ctx.stroke();
+    }
+
+    drawExportElementText(ctx, label, rootRect, x, y);
+    drawExportElementText(ctx, kind, rootRect, x, y);
+  }
+
+  for (const button of nodeEl.querySelectorAll('.node-actions button')) {
+    drawExportDomButton(ctx, button, rootRect, x, y);
+  }
+  ctx.restore();
+}
+
+function renderWorkflowToCanvas(scale=3, backgroundMode='dark') {
+  const info = workflowExportBounds(80);
+  const out = document.createElement('canvas');
+  out.width = Math.round(info.width * scale);
+  out.height = Math.round(info.height * scale);
+  const ctx = out.getContext('2d');
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  drawWorkflowGrid(ctx, info.width, info.height, backgroundMode);
+
+  ctx.save();
+  ctx.translate(info.padding - info.minX, info.padding - info.minY);
+  ctx.strokeStyle = workflowBackgroundSpec(backgroundMode).edgeColor;
+  ctx.lineWidth = 2.3;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const paths = [...svg.querySelectorAll('.edge-path')];
+  for (const p of paths) {
+    const d = p.getAttribute('d');
+    if (!d || typeof Path2D === 'undefined') continue;
+    const path = new Path2D(d);
+    ctx.shadowColor = 'rgba(103,232,249,0.25)';
+    ctx.shadowBlur = 3;
+    ctx.stroke(path);
+  }
+  ctx.restore();
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+
+  for (const node of info.nodes) {
+    drawWorkflowNodeToCanvas(ctx, node, info);
+  }
+
+  return { canvas: out, width: info.width, height: info.height };
+}
+
+
+let __workflowExportMeasureCtx = null;
+function workflowExportMeasureCtx() {
+  if (!__workflowExportMeasureCtx) {
+    const c = document.createElement('canvas');
+    __workflowExportMeasureCtx = c.getContext('2d');
+  }
+  return __workflowExportMeasureCtx;
+}
+
+function fitTextForFont(text, maxWidth, font) {
+  const ctx = workflowExportMeasureCtx();
+  ctx.font = font || '12px sans-serif';
+  const s = String(text ?? '');
+  if (ctx.measureText(s).width <= maxWidth) return s;
+  let out = s;
+  while (out.length > 1 && ctx.measureText(out + '…').width > maxWidth) out = out.slice(0, -1);
+  return out + '…';
+}
+
+function pxNumber(value, fallback=0) {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function svgTextFromElement(element, rootRect, nodeX, nodeY, options={}) {
+  if (!element) return '';
+  const rawText = String(element.textContent || '').trim();
+  if (!rawText) return '';
+  const r = exportLocalRect(element, rootRect);
+  const cs = getComputedStyle(element);
+  const padLeft = Number(options.padLeft || 0);
+  const padRight = Number(options.padRight || 0);
+  if (r.height <= 0) return '';
+  const font = exportElementFont(element);
+  const text = rawText;
+  const align = options.align || cs.textAlign || 'left';
+  let anchor = 'start';
+  let textX = nodeX + r.x + padLeft;
+  if (align === 'right' || align === 'end') {
+    anchor = 'end';
+    textX = nodeX + r.right - padRight;
+  } else if (align === 'center') {
+    anchor = 'middle';
+    textX = nodeX + r.x + r.width / 2;
+  }
+  const textY = nodeY + r.y + r.height / 2;
+  const fill = options.color || cs.color || '#e5e7eb';
+  return `<text x="${textX.toFixed(2)}" y="${textY.toFixed(2)}" text-anchor="${anchor}" dominant-baseline="middle" style="font:${escapeHtml(font)};fill:${escapeHtml(fill)};">${escapeHtml(text)}</text>`;
+}
+
+function svgRoundedRect(x, y, width, height, radius, fill, stroke, strokeWidth=1, extraAttrs='') {
+  const attrs = [
+    `x="${x.toFixed(2)}"`,
+    `y="${y.toFixed(2)}"`,
+    `width="${width.toFixed(2)}"`,
+    `height="${height.toFixed(2)}"`,
+    `rx="${Math.max(0, radius).toFixed(2)}"`,
+    `ry="${Math.max(0, radius).toFixed(2)}"`,
+    `fill="${fill ?? 'none'}"`,
+    `stroke="${stroke ?? 'none'}"`,
+    `stroke-width="${strokeWidth}"`,
+  ];
+  if (extraAttrs) attrs.push(extraAttrs);
+  return `<rect ${attrs.join(' ')} />`;
+}
+
+function svgLine(x1, y1, x2, y2, stroke, strokeWidth=1) {
+  return `<line x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+}
+
+function svgCircle(cx, cy, r, fill, stroke, strokeWidth=1) {
+  return `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${r.toFixed(2)}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" />`;
+}
+
+function svgNodeMarkup(nodeInfo, exportInfo) {
+  const nodeEl = nodeInfo.element;
+  if (!nodeEl) return '';
+  const rootRect = nodeEl.getBoundingClientRect();
+  const x = nodeInfo.x + exportInfo.padding - exportInfo.minX;
+  const y = nodeInfo.y + exportInfo.padding - exportInfo.minY;
+  const w = nodeInfo.width;
+  const h = nodeInfo.height;
+  const nodeCs = getComputedStyle(nodeEl);
+  const status = nodeStatus(nodeInfo.id)?.status || 'idle';
+  const statusColors = nodeStatusColors(status);
+  const parts = [];
+
+  if ((state.selectedNodeIds || []).includes(nodeInfo.id)) {
+    parts.push(svgRoundedRect(x - 1, y - 1, w + 2, h + 2, 15, 'none', '#38bdf8', 2));
+  }
+  if (status !== 'idle') {
+    parts.push(svgRoundedRect(x + 1, y + 1, w - 2, h - 2, 13, 'none', statusColors.borderGlow, 1.5));
+  }
+
+  parts.push(svgRoundedRect(x, y, w, h, pxNumber(nodeCs.borderTopLeftRadius, 14), 'url(#workflow-node-bg)', '#334155', 1));
+
+  const header = nodeEl.querySelector('.node-header');
+  if (header) {
+    const hr = exportLocalRect(header, rootRect);
+    parts.push(svgLine(x, y + hr.bottom, x + w, y + hr.bottom, 'rgba(148,163,184,0.18)', 1));
+  }
+
+  const title = nodeEl.querySelector('.node-title');
+  const type = nodeEl.querySelector('.node-type');
+  const statusEl = nodeEl.querySelector('.node-status');
+  parts.push(svgTextFromElement(title, rootRect, x, y));
+  parts.push(svgTextFromElement(type, rootRect, x, y));
+
+  if (statusEl) {
+    const sr = exportLocalRect(statusEl, rootRect);
+    const scs = getComputedStyle(statusEl);
+    parts.push(svgRoundedRect(
+      x + sr.x,
+      y + sr.y,
+      sr.width,
+      sr.height,
+      pxNumber(scs.borderTopLeftRadius, 999),
+      scs.backgroundColor || statusColors.badgeBg,
+      scs.borderColor || 'rgba(255,255,255,0.15)',
+      Math.max(1, pxNumber(scs.borderTopWidth, 1))
+    ));
+    parts.push(svgTextFromElement(statusEl, rootRect, x, y, { align: 'center', color: scs.color || statusColors.badgeText }));
+  }
+
+  for (const row of nodeEl.querySelectorAll('.port-row')) {
+    const dot = row.querySelector('.port-dot');
+    const label = row.querySelector('.port-label');
+    const kind = row.querySelector('.port-kind');
+
+    if (dot) {
+      const dr = exportLocalRect(dot, rootRect);
+      const dcs = getComputedStyle(dot);
+      const cx = x + dr.x + dr.width / 2;
+      const cy = y + dr.y + dr.height / 2;
+      parts.push(svgCircle(
+        cx,
+        cy,
+        Math.max(1, dr.width / 2 - 1),
+        dcs.backgroundColor || '#020617',
+        dcs.borderColor || (dot.classList.contains('output') ? '#38bdf8' : '#22c55e'),
+        Math.max(1, pxNumber(dcs.borderTopWidth, 2))
+      ));
+    }
+
+    parts.push(svgTextFromElement(label, rootRect, x, y));
+    parts.push(svgTextFromElement(kind, rootRect, x, y));
+  }
+
+  for (const button of nodeEl.querySelectorAll('.node-actions button')) {
+    const br = exportLocalRect(button, rootRect);
+    const bcs = getComputedStyle(button);
+    parts.push(svgRoundedRect(
+      x + br.x,
+      y + br.y,
+      br.width,
+      br.height,
+      pxNumber(bcs.borderTopLeftRadius, 7),
+      bcs.backgroundColor || '#182235',
+      bcs.borderColor || '#334155',
+      Math.max(1, pxNumber(bcs.borderTopWidth, 1))
+    ));
+    parts.push(svgTextFromElement(button, rootRect, x, y, { align: 'center', color: bcs.color || '#e5e7eb' }));
+  }
+
+  return `<g class="workflow-node" data-node-id="${escapeHtml(nodeInfo.id)}">${parts.join('')}</g>`;
+}
+
+function buildWorkflowExportSvg(backgroundMode='dark') {
+  const info = workflowExportBounds(80);
+  const offsetX = info.padding - info.minX;
+  const offsetY = info.padding - info.minY;
+  const bg = workflowBackgroundSpec(backgroundMode);
+
+  const edgePaths = [...svg.querySelectorAll('.edge-path')]
+    .map(path => {
+      const d = path.getAttribute('d');
+      return d ? `<path d="${escapeHtml(d)}" fill="none" stroke="${bg.edgeColor}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" />` : '';
+    })
+    .join('');
+
+  const nodeMarkup = info.nodes.map(node => svgNodeMarkup(node, info)).join('');
+
+  const bgRects = backgroundMode === 'transparent'
+    ? ''
+    : `
+      <rect x="0" y="0" width="${info.width}" height="${info.height}" fill="${bg.background}" />
+      <rect x="0" y="0" width="${info.width}" height="${info.height}" fill="url(#workflow-grid-dots)" />`;
+
+  const svgText = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${info.width}" height="${info.height}" viewBox="0 0 ${info.width} ${info.height}">
+      <defs>
+        <pattern id="workflow-grid-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+          <circle cx="1" cy="1" r="1" fill="${bg.dotColor || 'transparent'}" />
+        </pattern>
+        <linearGradient id="workflow-node-bg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#172033" />
+          <stop offset="100%" stop-color="#0b1220" />
+        </linearGradient>
+      </defs>
+      ${bgRects}
+      <g class="workflow-edges" transform="translate(${offsetX}, ${offsetY})">${edgePaths}</g>
+      <g class="workflow-nodes">${nodeMarkup}</g>
+    </svg>`;
+
+  return {
+    svgText,
+    width: info.width,
+    height: info.height,
+  };
+}
+async function exportWorkflowSvg() {
+  try {
+    const backgroundMode = promptWorkflowBackgroundMode('dark');
+    if (backgroundMode === null) return;
+    const { svgText } = buildWorkflowExportSvg(backgroundMode);
+    const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    downloadBlob(blob, workflowExportFilename('svg'));
+    showHint(`Workflow SVG exported (${backgroundMode} background).`, 2200);
+  } catch (err) {
+    alert(`Workflow SVG export failed: ${err}`);
+  }
+}
+
+async function exportWorkflowPng() {
+  try {
+    const input = prompt('PNG scale factor (recommended 2–4):', '3');
+    if (input === null) return;
+    const scale = Math.max(1, Math.min(8, Number(input) || 3));
+    const backgroundMode = promptWorkflowBackgroundMode('dark');
+    if (backgroundMode === null) return;
+    const rendered = renderWorkflowToCanvas(scale, backgroundMode);
+    rendered.canvas.toBlob((pngBlob) => {
+      if (!pngBlob) {
+        alert('Workflow PNG export failed while creating the PNG file.');
+        return;
+      }
+      downloadBlob(pngBlob, workflowExportFilename('png'));
+      showHint(`Workflow PNG exported (${rendered.width}×${rendered.height} at ${scale}×, ${backgroundMode} background).`, 3000);
+    }, 'image/png');
+  } catch (err) {
+    alert(`Workflow PNG export failed: ${err}`);
+  }
+}
 el('uploadForm').addEventListener('submit', uploadFile);
 el('btnRun').addEventListener('click', () => runGraph('selected'));
 el('btnClearCache').addEventListener('click', clearExecutionCache);
@@ -5081,7 +5955,10 @@ el('btnStopRun').addEventListener('click', stopCurrentRun);
 el('btnSaveGraph').addEventListener('click', saveGraphJson);
 el('btnSaveProject').addEventListener('click', saveProjectJson);
 el('btnSavePortableProject').addEventListener('click', savePortableProjectZip);
+el('btnExportNotebook').addEventListener('click', openNotebookExportDialog);
 el('btnSaveManifest').addEventListener('click', saveRunManifest);
+el('btnExportWorkflowPng').addEventListener('click', exportWorkflowPng);
+el('btnExportWorkflowSvg').addEventListener('click', exportWorkflowSvg);
 el('btnClear').addEventListener('click', clearGraph);
 el('btnRefreshFiles').addEventListener('click', refreshUploads);
 el('btnCleanupFiles').addEventListener('click', cleanupMissingFiles);

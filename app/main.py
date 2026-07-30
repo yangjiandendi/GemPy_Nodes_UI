@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from .graph_executor import GraphExecutor
 from .models import GraphRequest
 from .node_registry import NODE_TYPES
+from .notebook_export import create_notebook_export
 from .runtime_store import cleanup_runtime_objects, get_runtime_object
 from .storage import (
     WORKSPACE,
@@ -37,7 +38,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 EXAMPLES_DIR = ROOT / "examples"
 
-app = FastAPI(title="GemPy Node Editor", version="0.92.0")
+app = FastAPI(title="GemPy Node Editor", version="0.1.0")
 executor = GraphExecutor()
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -234,7 +235,7 @@ def index() -> FileResponse:
 def version() -> Dict[str, Any]:
     return {
         "app": "GemPy Node Editor",
-        "version": "0.81.0",
+        "version": "0.1.0",
         "features": [
             "node_statuses",
             "run_log",
@@ -246,6 +247,14 @@ def version() -> Dict[str, Any]:
             "portable_project_zip",
             "macos_pyvista_process_fix",
             "file_workspace_rescan",
+            "workflow_screenshot_export",
+            "workflow_png_canvas_export",
+            "workflow_transparent_background",
+            "workflow_svg_pure_shapes",
+            "ppt_compatible_svg_export",
+            "workflow_export_full_text",
+            "no_text_ellipsis_in_export",
+            "workflow_png_dom_geometry",
         ],
     }
 
@@ -473,6 +482,48 @@ def export_portable_project(project: Dict[str, Any]) -> StreamingResponse:
 
     headers = {"Content-Disposition": "attachment; filename=gempy_node_portable_project.zip"}
     return StreamingResponse(_iter_file(), media_type="application/zip", headers=headers)
+
+
+@app.post("/api/notebook/export")
+def export_workflow_notebook(payload: Dict[str, Any]) -> StreamingResponse:
+    """Export a graph as a stepwise standalone Jupyter notebook.
+
+    The portable ZIP mode bundles the notebook, requirements, original workflow
+    JSON and referenced input files. The notebook contains ordinary Python helper
+    functions and direct pandas/GemPy/PyVista calls; it does not execute NodeRegistry
+    classes or RuntimeValue objects.
+    """
+    project = payload.get("project") if isinstance(payload, dict) else None
+    options = payload.get("options") if isinstance(payload, dict) else None
+    if not isinstance(project, dict):
+        raise HTTPException(status_code=400, detail="Missing notebook export project payload.")
+
+    try:
+        export_path, download_name, media_type = create_notebook_export(
+            project,
+            options=options if isinstance(options, dict) else {},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Notebook export failed: {exc}") from exc
+
+    def _iter_export():
+        try:
+            with open(export_path, "rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            try:
+                export_path.unlink()
+            except Exception:
+                pass
+
+    headers = {"Content-Disposition": f'attachment; filename="{download_name}"'}
+    return StreamingResponse(_iter_export(), media_type=media_type, headers=headers)
 
 
 @app.post("/api/project/import")

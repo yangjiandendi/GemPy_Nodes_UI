@@ -5169,8 +5169,32 @@ class PyVistaClippedLayerViewerNode(BaseNode):
         preview["web_viewer_label"] = "Clipped mesh" if use_mesh_input else "Clipped layer mesh"
 
         return {
-            "report": RuntimeValue("report", preview, name="clipping_tool", preview=preview),
-            "mesh": RuntimeValue("mesh", mesh, name=final_out_name, preview=preview, metadata={"file_id": record["file_id"], **preview}),
+            "report": RuntimeValue(
+                "report",
+                preview,
+                name="clipping_tool",
+                preview=preview,
+            ),
+            "mesh": RuntimeValue(
+                "mesh",
+                mesh,
+                name=final_out_name,
+                preview=preview,
+                metadata={
+                    "file_id": record["file_id"],
+                    **preview,
+                },
+            ),
+            "file": RuntimeValue(
+                "file",
+                Path(record["path"]),
+                name=final_out_name,
+                preview=preview,
+                metadata={
+                    "file_id": record["file_id"],
+                    **preview,
+                },
+            ),
         }
 
 
@@ -6352,6 +6376,57 @@ class PlotGemPy3DNode(BaseNode):
                 preview=preview,
                 metadata=preview,
             )
+
+            if _as_bool(params.get("save_surface_mesh"), True):
+                requested_name = str(
+                    params.get("surface_mesh_file_name")
+                    or "gempy_3d_surfaces.vtp"
+                ).strip() or "gempy_3d_surfaces.vtp"
+
+                suffix = Path(requested_name).suffix.lower()
+                if suffix not in {".vtp", ".vtu", ".vtk"}:
+                    requested_name = (
+                        f"{Path(requested_name).stem}.vtp"
+                    )
+                    suffix = ".vtp"
+
+                output_path = make_runtime_path(
+                    Path(requested_name).stem,
+                    suffix,
+                )
+
+                if suffix == ".vtu":
+                    mesh_to_save = mesh.cast_to_unstructured_grid()
+                elif suffix == ".vtp":
+                    mesh_to_save = mesh.extract_surface()
+                else:
+                    mesh_to_save = mesh
+
+                mesh_to_save.save(output_path)
+                record = register_output_file(
+                    output_path,
+                    display_name=requested_name,
+                )
+
+                preview.update(
+                    {
+                        "surface_mesh_file_name": requested_name,
+                        "surface_mesh_download_url": (
+                            f"/api/download/{record['file_id']}"
+                        ),
+                    }
+                )
+
+                outputs["file"] = RuntimeValue(
+                    "file",
+                    Path(record["path"]),
+                    name=requested_name,
+                    preview=preview,
+                    metadata={
+                        "file_id": record["file_id"],
+                        **preview,
+                    },
+                )
         else:
             preview["web_viewer_available"] = False
             preview["web_viewer_reason"] = surface_report.get("message") or "No GemPy surface mesh available for inline display."
@@ -7855,6 +7930,14 @@ class ExtractVoxelBoundariesNode(BaseNode):
             "full_shell": full_shell,
         }
 
+        # Re-transfer point data after all merge/triangulate/clean operations.
+        # This guarantees that combined side_mesh/full_shell outputs also inherit
+        # all point arrays from the input voxel mesh.
+        grid_info = self.build_voxel_index_map(mesh, cell_data_name=cell_data_name, decimals=int(decimals))
+        point_transfer_reports: Dict[str, Dict[str, Any]] = {}
+        for boundary_name, boundary_mesh in meshes_to_save.items():
+            point_transfer_reports[boundary_name] = self.transfer_input_point_data(mesh, boundary_mesh, grid_info)
+
         colors = self._boundary_colors(params)
         selected_for_preview = [
             name for name in ["top", "bottom", "north", "south", "east", "west"]
@@ -7869,29 +7952,56 @@ class ExtractVoxelBoundariesNode(BaseNode):
         manifest_items = []
 
         for name, bnd in meshes_to_save.items():
-            path = make_runtime_path(f"{output_prefix}_{name}", ".vtp")
-            bnd.save(path)
-            display_name = f"{output_prefix}_{name}.vtp"
-            rec = register_output_file(path, display_name=display_name)
-            output_records[name] = rec
+            saved = self.save_polydata_as_vtp_and_vtu(
+                bnd,
+                stem=f"{output_prefix}_{name}",
+                display_stem=f"{output_prefix}_{name}",
+            )
+            rec_vtp = saved["vtp"]["record"]
+            rec_vtu = saved["vtu"]["record"]
+            display_name_vtp = saved["vtp"]["file_name"]
+            display_name_vtu = saved["vtu"]["file_name"]
+
+            output_records[name] = {"vtp": rec_vtp, "vtu": rec_vtu}
+            cell_scalar_names = list(getattr(bnd, "cell_data", {}).keys())
+            point_scalar_names = list(getattr(bnd, "point_data", {}).keys())
             boundary_stats[name] = {
                 "n_cells": int(bnd.n_cells),
                 "n_points": int(bnd.n_points),
                 "bounds": [float(v) for v in bnd.bounds] if bnd.n_points else None,
-                "download_url": f"/api/download/{rec['file_id']}",
-                "file_name": display_name,
+                "cell_data": cell_scalar_names,
+                "point_data": point_scalar_names,
+                "input_cell_scalars_copied": [s for s in cell_scalar_names if s != "BoundaryID"],
+                "input_point_scalars_copied": point_scalar_names,
+                # Backward-compatible field name from v93.
+                "input_scalars_copied": [s for s in cell_scalar_names if s != "BoundaryID"],
+                "point_data_transfer": point_transfer_reports.get(name, {}),
+                # Backward-compatible default download points to VTP.
+                "download_url": f"/api/download/{rec_vtp['file_id']}",
+                "download_url_vtp": f"/api/download/{rec_vtp['file_id']}",
+                "download_url_vtu": f"/api/download/{rec_vtu['file_id']}",
+                "file_name": display_name_vtp,
+                "file_name_vtp": display_name_vtp,
+                "file_name_vtu": display_name_vtu,
             }
             outputs[name] = RuntimeValue(
                 "file",
-                Path(rec["path"]),
-                name=display_name,
+                Path(rec_vtp["path"]),
+                name=display_name_vtp,
                 preview=boundary_stats[name],
-                metadata={"file_id": rec["file_id"], **boundary_stats[name]},
+                metadata={"file_id": rec_vtp["file_id"], "format": "vtp", **boundary_stats[name]},
+            )
+            outputs[f"{name}_vtu"] = RuntimeValue(
+                "file",
+                Path(rec_vtu["path"]),
+                name=display_name_vtu,
+                preview=boundary_stats[name],
+                metadata={"file_id": rec_vtu["file_id"], "format": "vtu", **boundary_stats[name]},
             )
             if name in selected_for_preview:
                 manifest_items.append({
                     "name": name,
-                    "path": rec["path"],
+                    "path": rec_vtp["path"],
                     "color": colors.get(name, "white"),
                     "n_cells": int(bnd.n_cells),
                 })
@@ -7905,7 +8015,6 @@ class ExtractVoxelBoundariesNode(BaseNode):
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         manifest_rec = register_output_file(manifest_path, display_name=f"{output_prefix}_selected_boundaries_preview.json")
 
-        grid_info = self.build_voxel_index_map(mesh, cell_data_name=cell_data_name, decimals=int(decimals))
         preview = {
             "operation": "extract_voxel_boundaries",
             "source": source_name,
@@ -7920,6 +8029,12 @@ class ExtractVoxelBoundariesNode(BaseNode):
             "selected_for_preview": selected_for_preview,
             "boundary_stats": boundary_stats,
             "downloads": {name: info["download_url"] for name, info in boundary_stats.items()},
+            "downloads_vtp": {name: info["download_url_vtp"] for name, info in boundary_stats.items()},
+            "downloads_vtu": {name: info["download_url_vtu"] for name, info in boundary_stats.items()},
+            "all_input_cell_scalars_copied": list(self.collect_input_cell_scalars(mesh).keys()),
+            "all_input_point_scalars_copied": list(self.collect_input_point_scalars(mesh).keys()),
+            "point_data_transfer": point_transfer_reports,
+            "formats": ["vtp", "vtu"],
             "pyvista_preview_url": f"/api/pyvista/boundaries/{manifest_rec['file_id']}",
             "pyvista_button_label": "Open Selected Boundaries 3D Popup",
             "pyvista_note": "The popup shows only the boundaries selected by the node checkboxes. Each boundary is added as a separate PyVista mesh with its configured color.",
@@ -8029,6 +8144,275 @@ class ExtractVoxelBoundariesNode(BaseNode):
         }
 
     @staticmethod
+    def collect_input_cell_scalars(mesh: Any) -> Dict[str, np.ndarray]:
+        """Collect all input cell-data scalar arrays that can be transferred to boundary faces.
+
+        Boundary faces are generated from source voxel cells, so cell-data arrays
+        can be copied unambiguously via the source cell id. 1D and multi-column
+        cell arrays are both supported as long as their first dimension matches
+        mesh.n_cells.
+        """
+        arrays: Dict[str, np.ndarray] = {}
+        n_cells = int(getattr(mesh, "n_cells", 0))
+        for name, values in getattr(mesh, "cell_data", {}).items():
+            try:
+                arr = np.asarray(values)
+                if arr.shape[0] == n_cells:
+                    arrays[str(name)] = arr
+            except Exception:
+                pass
+        return arrays
+
+    @staticmethod
+    def boundary_arrays_from_source_cells(mesh: Any, source_cell_ids: List[int], preferred_first: Optional[str] = None) -> Dict[str, Any]:
+        """Create boundary cell arrays by copying all input cell-data scalars.
+
+        Each generated boundary face stores the scalar values of the voxel cell
+        from which the face was generated.
+        """
+        scalars = ExtractVoxelBoundariesNode.collect_input_cell_scalars(mesh)
+        if preferred_first and preferred_first in scalars:
+            # Keep the preferred scalar first in JSON/VTK metadata where possible.
+            scalars = {preferred_first: scalars[preferred_first], **{k: v for k, v in scalars.items() if k != preferred_first}}
+
+        ids = np.asarray(source_cell_ids, dtype=np.int64)
+        out: Dict[str, Any] = {}
+        if ids.size == 0:
+            for name, arr in scalars.items():
+                out[name] = np.asarray(arr[:0])
+            return out
+
+        valid = (ids >= 0) & (ids < int(getattr(mesh, "n_cells", 0)))
+        for name, arr in scalars.items():
+            try:
+                # Allocate with the correct trailing shape and dtype.
+                shape = (ids.size,) + tuple(np.asarray(arr).shape[1:])
+                copied = np.empty(shape, dtype=np.asarray(arr).dtype)
+                if valid.all():
+                    copied = np.asarray(arr)[ids]
+                else:
+                    copied[:] = 0
+                    copied[valid] = np.asarray(arr)[ids[valid]]
+                out[name] = copied
+            except Exception:
+                pass
+        return out
+
+    @staticmethod
+    def collect_input_point_scalars(mesh: Any) -> Dict[str, np.ndarray]:
+        """Collect all input point-data arrays that can be transferred.
+
+        Arrays are accepted when their first dimension equals mesh.n_points.
+        Multi-component arrays, such as vectors, are preserved.
+        """
+        arrays: Dict[str, np.ndarray] = {}
+        n_points = int(getattr(mesh, "n_points", 0))
+        for name, values in getattr(mesh, "point_data", {}).items():
+            try:
+                arr = np.asarray(values)
+                if arr.shape[0] == n_points:
+                    arrays[str(name)] = arr
+            except Exception:
+                pass
+        return arrays
+
+    @staticmethod
+    def _fill_value_for_dtype(dtype: np.dtype) -> Any:
+        """Return a safe fill value for unmatched boundary points."""
+        try:
+            if np.issubdtype(dtype, np.floating):
+                return np.nan
+            if np.issubdtype(dtype, np.complexfloating):
+                return np.nan + 0j
+            if np.issubdtype(dtype, np.bool_):
+                return False
+            if np.issubdtype(dtype, np.integer):
+                return 0
+            if np.issubdtype(dtype, np.str_) or np.issubdtype(dtype, np.bytes_):
+                return ""
+        except Exception:
+            pass
+        return 0
+
+    @staticmethod
+    def map_boundary_points_to_input_points(mesh: Any, boundary: Any, info: Dict[str, Any]) -> tuple[np.ndarray, Dict[str, Any]]:
+        """Map generated boundary vertices back to original input mesh points.
+
+        Boundary vertices lie on the regular voxel-grid vertices. Both input and
+        boundary coordinates are therefore quantized with the same inferred
+        voxel spacing/origin. This is robust to the tiny floating-point noise
+        already handled by the boundary cell indexing fix.
+
+        If more than one input point collapses to the same grid vertex, the first
+        matching input point is used. Such duplicates are common in uncleaned
+        unstructured voxel grids and are reported.
+        """
+        input_points = np.asarray(getattr(mesh, "points", np.empty((0, 3))), dtype=float)
+        boundary_points = np.asarray(getattr(boundary, "points", np.empty((0, 3))), dtype=float)
+        n_boundary = int(boundary_points.shape[0])
+        if n_boundary == 0:
+            return np.empty((0,), dtype=np.int64), {
+                "boundary_points": 0,
+                "matched_points": 0,
+                "unmatched_points": 0,
+                "duplicate_input_grid_vertices": 0,
+                "mapping": "quantized_grid_vertex",
+            }
+        if input_points.shape[0] == 0:
+            return np.full(n_boundary, -1, dtype=np.int64), {
+                "boundary_points": n_boundary,
+                "matched_points": 0,
+                "unmatched_points": n_boundary,
+                "duplicate_input_grid_vertices": 0,
+                "mapping": "quantized_grid_vertex",
+            }
+
+        dx, dy, dz = float(info["dx"]), float(info["dy"]), float(info["dz"])
+        x0, y0, z0 = [float(v) for v in info["origin"]]
+        nx, ny, nz = int(info["nx"]), int(info["ny"]), int(info["nz"])
+        spacing = np.asarray([dx, dy, dz], dtype=float)
+        origin = np.asarray([x0, y0, z0], dtype=float)
+
+        input_ijk = np.rint((input_points - origin[None, :]) / spacing[None, :]).astype(np.int64)
+        boundary_ijk = np.rint((boundary_points - origin[None, :]) / spacing[None, :]).astype(np.int64)
+
+        sx = int(nx + 1)
+        sy = int(ny + 1)
+        sz = int(nz + 1)
+
+        input_valid = (
+            (input_ijk[:, 0] >= 0) & (input_ijk[:, 0] < sx)
+            & (input_ijk[:, 1] >= 0) & (input_ijk[:, 1] < sy)
+            & (input_ijk[:, 2] >= 0) & (input_ijk[:, 2] < sz)
+        )
+        boundary_valid = (
+            (boundary_ijk[:, 0] >= 0) & (boundary_ijk[:, 0] < sx)
+            & (boundary_ijk[:, 1] >= 0) & (boundary_ijk[:, 1] < sy)
+            & (boundary_ijk[:, 2] >= 0) & (boundary_ijk[:, 2] < sz)
+        )
+
+        valid_input_ids = np.where(input_valid)[0].astype(np.int64)
+        valid_input_ijk = input_ijk[input_valid]
+        input_keys = (
+            valid_input_ijk[:, 0]
+            + sx * (valid_input_ijk[:, 1] + sy * valid_input_ijk[:, 2])
+        ).astype(np.int64)
+
+        # Sort once, then retain the first original point id for every regular
+        # grid vertex. This is much lighter than a Python dictionary for large
+        # voxel models.
+        order = np.argsort(input_keys, kind="mergesort")
+        sorted_keys = input_keys[order]
+        sorted_ids = valid_input_ids[order]
+        unique_keys, unique_first = np.unique(sorted_keys, return_index=True)
+        unique_ids = sorted_ids[unique_first]
+        duplicate_count = int(sorted_keys.size - unique_keys.size)
+
+        mapped = np.full(n_boundary, -1, dtype=np.int64)
+        valid_boundary_ids = np.where(boundary_valid)[0].astype(np.int64)
+        valid_boundary_ijk = boundary_ijk[boundary_valid]
+        boundary_keys = (
+            valid_boundary_ijk[:, 0]
+            + sx * (valid_boundary_ijk[:, 1] + sy * valid_boundary_ijk[:, 2])
+        ).astype(np.int64)
+
+        pos = np.searchsorted(unique_keys, boundary_keys)
+        found = (pos < unique_keys.size)
+        if found.any():
+            found_indices = np.where(found)[0]
+            found[found_indices] = unique_keys[pos[found_indices]] == boundary_keys[found_indices]
+        mapped_valid = np.full(valid_boundary_ids.size, -1, dtype=np.int64)
+        mapped_valid[found] = unique_ids[pos[found]]
+        mapped[valid_boundary_ids] = mapped_valid
+
+        # Rare fallback: when a generated point does not quantize to an existing
+        # input vertex, query the nearest original point. The tolerance is tied
+        # to the inferred voxel size, so a genuinely unrelated point is not used.
+        missing = np.where(mapped < 0)[0]
+        fallback_matches = 0
+        if missing.size:
+            try:
+                from scipy.spatial import cKDTree
+                tree = cKDTree(input_points)
+                distances, nearest = tree.query(boundary_points[missing], k=1)
+                tolerance = max(min(dx, dy, dz) * 1e-5, 1e-8)
+                accept = np.isfinite(distances) & (distances <= tolerance)
+                mapped[missing[accept]] = np.asarray(nearest, dtype=np.int64)[accept]
+                fallback_matches = int(np.count_nonzero(accept))
+            except Exception:
+                pass
+
+        matched = int(np.count_nonzero(mapped >= 0))
+        return mapped, {
+            "boundary_points": n_boundary,
+            "matched_points": matched,
+            "unmatched_points": int(n_boundary - matched),
+            "fallback_nearest_matches": fallback_matches,
+            "duplicate_input_grid_vertices": duplicate_count,
+            "mapping": "quantized_grid_vertex",
+        }
+
+    @classmethod
+    def transfer_input_point_data(cls, mesh: Any, boundary: Any, info: Dict[str, Any]) -> Dict[str, Any]:
+        """Copy every compatible input point-data array to a boundary mesh."""
+        point_scalars = cls.collect_input_point_scalars(mesh)
+        source_point_ids, mapping_report = cls.map_boundary_points_to_input_points(mesh, boundary, info)
+
+        copied_names: List[str] = []
+        if int(getattr(boundary, "n_points", 0)) == 0:
+            return {
+                **mapping_report,
+                "copied_point_data": copied_names,
+            }
+
+        valid = source_point_ids >= 0
+        for name, values in point_scalars.items():
+            try:
+                arr = np.asarray(values)
+                out_shape = (source_point_ids.size,) + tuple(arr.shape[1:])
+                out = np.empty(out_shape, dtype=arr.dtype)
+                out[...] = cls._fill_value_for_dtype(arr.dtype)
+                if valid.any():
+                    out[valid] = arr[source_point_ids[valid]]
+                boundary.point_data[str(name)] = out
+                copied_names.append(str(name))
+            except Exception:
+                # Some object/string arrays may not be supported by a particular
+                # VTK writer. Keep the remaining arrays rather than failing the
+                # complete boundary extraction.
+                pass
+
+        return {
+            **mapping_report,
+            "copied_point_data": copied_names,
+        }
+
+    @staticmethod
+    def save_polydata_as_vtp_and_vtu(mesh: Any, stem: str, display_stem: str) -> Dict[str, Dict[str, Any]]:
+        """Save a boundary mesh in both VTP and VTU formats and register both files."""
+        vtp_path = make_runtime_path(stem, ".vtp")
+        mesh.save(vtp_path)
+        vtp_name = f"{display_stem}.vtp"
+        vtp_rec = register_output_file(vtp_path, display_name=vtp_name)
+
+        vtu_path = make_runtime_path(stem, ".vtu")
+        try:
+            ug = mesh.cast_to_unstructured_grid()
+            ug.save(vtu_path)
+        except Exception:
+            # Fallback: PyVista usually supports this conversion for PolyData.
+            # If not, try extract_surface -> cast one more time to keep the node usable.
+            ug = mesh.extract_surface().cast_to_unstructured_grid()
+            ug.save(vtu_path)
+        vtu_name = f"{display_stem}.vtu"
+        vtu_rec = register_output_file(vtu_path, display_name=vtu_name)
+
+        return {
+            "vtp": {"record": vtp_rec, "file_name": vtp_name, "path": vtp_path},
+            "vtu": {"record": vtu_rec, "file_name": vtu_name, "path": vtu_path},
+        }
+
+    @staticmethod
     def build_polydata_from_quads(quads: List[np.ndarray], cell_arrays: Optional[Dict[str, Any]] = None):
         import pyvista as pv
         if len(quads) == 0:
@@ -8066,9 +8450,9 @@ class ExtractVoxelBoundariesNode(BaseNode):
         dx, dy, dz = info["dx"], info["dy"], info["dz"]
         x0, y0, z0 = info["origin"]
 
-        has_data = cell_data_name in mesh.cell_data
-        cell_values = mesh.cell_data[cell_data_name] if has_data else None
-        top_quads, bot_quads, top_vals, bot_vals = [], [], [], []
+        top_quads, bot_quads = [], []
+        top_source_cells: List[int] = []
+        bot_source_cells: List[int] = []
 
         def voxel_bounds(i, j, k):
             xmin = x0 + i * dx
@@ -8094,13 +8478,11 @@ class ExtractVoxelBoundariesNode(BaseNode):
 
                 xmin, xmax, ymin, ymax, zmin, zmax = voxel_bounds(i, j, k_top)
                 top_quads.append(np.array([[xmin, ymin, zmax], [xmax, ymin, zmax], [xmax, ymax, zmax], [xmin, ymax, zmax]]))
-                if has_data:
-                    top_vals.append(cell_values[cell_ids[i, j, k_top]])
+                top_source_cells.append(int(cell_ids[i, j, k_top]))
 
                 xmin, xmax, ymin, ymax, zmin, zmax = voxel_bounds(i, j, k_bot)
                 bot_quads.append(np.array([[xmin, ymin, zmin], [xmin, ymax, zmin], [xmax, ymax, zmin], [xmax, ymin, zmin]]))
-                if has_data:
-                    bot_vals.append(cell_values[cell_ids[i, j, k_bot]])
+                bot_source_cells.append(int(cell_ids[i, j, k_bot]))
 
         if add_top_risers:
             for i in range(nx - 1):
@@ -8118,11 +8500,10 @@ class ExtractVoxelBoundariesNode(BaseNode):
                     z_high = z0 + (k_high + 1) * dz
                     if z_high > z_low:
                         top_quads.append(np.array([[x, ymin, z_low], [x, ymax, z_low], [x, ymax, z_high], [x, ymin, z_high]]))
-                        if has_data:
-                            if k1 > k2:
-                                top_vals.append(cell_values[cell_ids[i, j, k1]])
-                            else:
-                                top_vals.append(cell_values[cell_ids[i + 1, j, k2]])
+                        if k1 > k2:
+                            top_source_cells.append(int(cell_ids[i, j, k1]))
+                        else:
+                            top_source_cells.append(int(cell_ids[i + 1, j, k2]))
 
             for i in range(nx):
                 for j in range(ny - 1):
@@ -8139,12 +8520,17 @@ class ExtractVoxelBoundariesNode(BaseNode):
                     z_high = z0 + (k_high + 1) * dz
                     if z_high > z_low:
                         top_quads.append(np.array([[xmin, y, z_low], [xmax, y, z_low], [xmax, y, z_high], [xmin, y, z_high]]))
-                        if has_data:
-                            top_vals.append(cell_values[cell_ids[i, j if k1 > k2 else j + 1, k1 if k1 > k2 else k2]])
+                        if k1 > k2:
+                            top_source_cells.append(int(cell_ids[i, j, k1]))
+                        else:
+                            top_source_cells.append(int(cell_ids[i, j + 1, k2]))
 
-        top = cls.build_polydata_from_quads(top_quads, {cell_data_name: top_vals} if has_data else None)
-        bottom = cls.build_polydata_from_quads(bot_quads, {cell_data_name: bot_vals} if has_data else None)
+        top_arrays = cls.boundary_arrays_from_source_cells(mesh, top_source_cells, preferred_first=cell_data_name)
+        bot_arrays = cls.boundary_arrays_from_source_cells(mesh, bot_source_cells, preferred_first=cell_data_name)
+        top = cls.build_polydata_from_quads(top_quads, top_arrays)
+        bottom = cls.build_polydata_from_quads(bot_quads, bot_arrays)
         return top, bottom
+
 
     @staticmethod
     def build_footprint_boundary_edges(info: Dict[str, Any]):
@@ -8284,10 +8670,8 @@ class ExtractVoxelBoundariesNode(BaseNode):
         cell_ids = info["cell_ids"]
         dz = info["dz"]
         z0 = info["origin"][2]
-        has_data = cell_data_name in mesh.cell_data
-        cell_values = mesh.cell_data[cell_data_name] if has_data else None
         side_quads = {"north": [], "south": [], "east": [], "west": []}
-        side_vals = {"north": [], "south": [], "east": [], "west": []}
+        side_source_cells = {"north": [], "south": [], "east": [], "west": []}
 
         def vertex_phys(v):
             u, vv = v
@@ -8314,15 +8698,15 @@ class ExtractVoxelBoundariesNode(BaseNode):
                             [p0_xy[0], p0_xy[1], zmax],
                         ])
                         side_quads[side_name].append(q)
-                        if has_data:
-                            side_vals[side_name].append(cell_values[cell_ids[i, j, k]])
+                        side_source_cells[side_name].append(int(cell_ids[i, j, k]))
         return {
             side_name: cls.build_polydata_from_quads(
                 side_quads[side_name],
-                {cell_data_name: side_vals[side_name]} if has_data else None,
+                cls.boundary_arrays_from_source_cells(mesh, side_source_cells[side_name], preferred_first=cell_data_name),
             )
             for side_name in ["north", "south", "east", "west"]
         }
+
 
     @classmethod
     def extract_boundaries_from_voxel_grid(cls, mesh: Any, cell_data_name: str = "MaterialIDs", decimals: int = 8, add_top_risers: bool = True) -> Dict[str, Any]:
@@ -8340,6 +8724,11 @@ class ExtractVoxelBoundariesNode(BaseNode):
         boundary_id_map = {"top": 1, "bottom": 2, "north": 3, "south": 4, "east": 5, "west": 6}
         for name, bnd in boundaries.items():
             bnd.cell_data["BoundaryID"] = np.full(bnd.n_cells, boundary_id_map[name], dtype=np.int32)
+            point_report = cls.transfer_input_point_data(mesh, bnd, info)
+            try:
+                bnd._node_editor_point_data_transfer_report = point_report
+            except Exception:
+                pass
         return boundaries
 
 
