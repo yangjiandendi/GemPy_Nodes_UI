@@ -461,20 +461,47 @@ def configure_structural_frame(
         except Exception:
             pass
 
-    # Apply optional fault-relation matrix.
+    # Apply the full fault-relation matrix after the final group order is known.
+    # Assigning individual entries would first invoke GemPy's property getter,
+    # which can reject a FAULT group before an explicit matrix has been set.
     cfg = parse_json(fault_relations_json, {}) or {}
     if as_bool(cfg.get("enabled"), False):
-        for relation in cfg.get("relations", []):
-            source = relation.get("source")
-            target = relation.get("target")
-            value = as_bool(relation.get("value"), True)
-            groups_now = list(geo_model.structural_frame.structural_groups)
-            name_to_index = {str(getattr(group, "name", index)): index for index, group in enumerate(groups_now)}
-            if source in name_to_index and target in name_to_index:
-                try:
-                    geo_model.structural_frame.fault_relations[name_to_index[source], name_to_index[target]] = value
-                except Exception:
-                    pass
+        groups_now = list(geo_model.structural_frame.structural_groups)
+        group_names = [str(getattr(group, "name", index)) for index, group in enumerate(groups_now)]
+        name_to_index = {name: index for index, name in enumerate(group_names)}
+        group_count = len(group_names)
+        matrix = np.zeros((group_count, group_count), dtype=int)
+
+        # Preserve compatibility with projects that store a complete raw matrix.
+        raw_matrix = cfg.get("matrix")
+        if isinstance(raw_matrix, list) and len(raw_matrix) == group_count:
+            candidate = np.asarray(raw_matrix, dtype=int)
+            if candidate.shape != (group_count, group_count):
+                raise ValueError(
+                    f"Fault relation matrix must be {group_count} x {group_count}, got {candidate.shape}."
+                )
+            matrix = (candidate != 0).astype(int)
+        else:
+            relations = cfg.get("relations") or []
+            if not isinstance(relations, list):
+                raise ValueError("Fault relations must be a list.")
+            for relation in relations:
+                if not isinstance(relation, dict):
+                    continue
+                active = as_bool(relation.get("active", relation.get("value", True)), True)
+                if not active:
+                    continue
+                source = str(relation.get("from") or relation.get("source") or "").strip()
+                target = str(relation.get("to") or relation.get("target") or "").strip()
+                if source not in name_to_index or target not in name_to_index or source == target:
+                    continue
+                matrix[name_to_index[source], name_to_index[target]] = 1
+
+        try:
+            geo_model.structural_frame.fault_relations = matrix
+        except Exception:
+            # Some GemPy releases require a boolean matrix.
+            geo_model.structural_frame.fault_relations = matrix.astype(bool)
     return geo_model
 
 
