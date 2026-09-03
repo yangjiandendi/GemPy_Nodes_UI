@@ -1239,7 +1239,8 @@ button[disabled] {
   margin-top: 5px;
 }
 
-.file-move-btn {
+.file-move-btn,
+.file-delete-btn {
   font-size: 10px;
   padding: 2px 6px;
 }

@@ -318,6 +318,7 @@ Typical actions:
 - Click an uploaded file to create a `Load Uploaded File` node.
 - Drag an uploaded file onto the canvas to create a `Load Uploaded File` node at that position.
 - Use `Move folder` to reassign an uploaded file to a category.
+- Use `Delete` to permanently remove an uploaded file from the managed workspace. The confirmation dialog warns when `Load Uploaded File` nodes still reference it.
 
 ### Center: canvas
 
@@ -1185,6 +1186,8 @@ _None._
 |---|---:|---:|---|---|
 | `rows` | `number` | `15` |  | Number of table rows shown in the preview. |
 | `mesh_scalars` | `text` | `auto` |  | Use auto to prefer MaterialIDs/id/lithology/layer. Or enter a cell/point data name. |
+| `filter_by_scalar_values` | `boolean` | `False` |  | Enable a display-only filter that keeps only cells/points matching the selected mesh scalar values. The upstream mesh is unchanged. |
+| `scalar_filter_values` | `text` |  |  | One numeric value such as `2`, or comma-separated values such as `2,5,7`. Uses `mesh_scalars` as the field to filter. |
 | `show_edges` | `boolean` | `False` |  | Show mesh/voxel cell edges in previews. |
 | `generate_thumbnail` | `boolean` | `True` |  | Generate an inline lightweight preview thumbnail where supported. |
 ### Plot GemPy 2D (`PlotGemPy2D`)

@@ -582,7 +582,7 @@ def _node_code(
             )
 
         lines += [
-            f"{report_var} = visualize({source}, scalars={_py(params.get('mesh_scalars', 'auto'))}, show_edges={bool(params.get('show_edges', True))}, rows={int(params.get('rows', 15) or 15)})",
+            f"{report_var} = visualize({source}, scalars={_py(params.get('mesh_scalars', 'auto'))}, show_edges={bool(params.get('show_edges', True))}, rows={int(params.get('rows', 15) or 15)}, filter_by_scalar_values={bool(params.get('filter_by_scalar_values', False))}, scalar_filter_values={_py(params.get('scalar_filter_values', ''))})",
         ]
 
     elif node_type == "CombineMeshes":

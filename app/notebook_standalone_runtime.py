@@ -11,6 +11,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
@@ -908,7 +909,76 @@ def extract_gempy_array(solution: Any, output_name: str = "lith_block", reshape:
     return array
 
 
-def visualize(value: Any, scalars: str = "auto", show_edges: bool = True, rows: int = 15) -> Any:
+def _visualization_scalar_name(mesh: Any, requested: str = "auto") -> str:
+    cell_keys = [str(key) for key in getattr(mesh, "cell_data", {}).keys()]
+    point_keys = [str(key) for key in getattr(mesh, "point_data", {}).keys()]
+    keys = cell_keys + point_keys
+    requested_text = str(requested or "auto").strip()
+    if requested_text.lower() not in {"", "auto", "none"}:
+        for key in keys:
+            if key == requested_text or key.lower() == requested_text.lower():
+                return key
+        return ""
+    for preferred in ["MaterialIDs", "MaterialID", "material_ids", "material_id", "id", "lith_block", "lithology", "layer", "layer_id", "BoundaryID"]:
+        if preferred in keys:
+            return preferred
+    return keys[0] if keys else ""
+
+
+def _filter_visualization_mesh(mesh: Any, scalar_name: str, raw_values: Any) -> tuple[Any, dict]:
+    if isinstance(raw_values, (list, tuple, np.ndarray)):
+        tokens = list(np.asarray(raw_values).ravel())
+    else:
+        tokens = [token.strip() for token in str(raw_values or "").replace(";", ",").split(",") if token.strip()]
+    if not tokens:
+        raise ValueError("Scalar-value filtering is enabled, but no Scalar values to show were provided.")
+    try:
+        selected_values = [float(token) for token in tokens]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Scalar values to show must be numeric and comma-separated, for example 2 or 2,5,7.") from exc
+    if not scalar_name:
+        available = list(getattr(mesh, "cell_data", {}).keys()) + list(getattr(mesh, "point_data", {}).keys())
+        raise ValueError(f"The selected visualization scalar was not found. Available scalars: {available}")
+
+    if scalar_name in getattr(mesh, "cell_data", {}):
+        association = "cell"
+        source_values = np.asarray(mesh.cell_data[scalar_name])
+    else:
+        association = "point"
+        source_values = np.asarray(mesh.point_data[scalar_name])
+    if source_values.ndim != 1:
+        raise ValueError(f"Scalar-value filtering needs a one-component array; {scalar_name!r} has shape {source_values.shape}.")
+    numeric_values = source_values.astype(float)
+    mask = np.zeros(numeric_values.shape, dtype=bool)
+    for selected in selected_values:
+        mask |= np.isclose(numeric_values, selected, rtol=1e-9, atol=1e-9)
+    if not np.any(mask):
+        raise ValueError(
+            f"No {association}s have {scalar_name} in {selected_values}. "
+            f"Available values (first 30): {np.unique(numeric_values)[:30].tolist()}"
+        )
+    if association == "cell":
+        filtered = mesh.extract_cells(np.flatnonzero(mask))
+    else:
+        filtered = mesh.extract_points(np.flatnonzero(mask), adjacent_cells=False, include_cells=False)
+    return filtered, {
+        "scalar": scalar_name,
+        "values": selected_values,
+        "association": association,
+        "input_cells": int(getattr(mesh, "n_cells", 0)),
+        "display_cells": int(getattr(filtered, "n_cells", 0)),
+        "display_points": int(getattr(filtered, "n_points", 0)),
+    }
+
+
+def visualize(
+    value: Any,
+    scalars: str = "auto",
+    show_edges: bool = True,
+    rows: int = 15,
+    filter_by_scalar_values: bool = False,
+    scalar_filter_values: Any = "",
+) -> Any:
     from IPython.display import display
     if isinstance(value, pd.DataFrame):
         display(value.head(int(rows)))
@@ -919,11 +989,17 @@ def visualize(value: Any, scalars: str = "auto", show_edges: bool = True, rows: 
         display(value if value.size <= 100 else value.reshape(-1)[:100])
         return value
     if hasattr(value, "plot") and hasattr(value, "n_points"):
-        scalar_name = None if scalars in {"", "auto", None} else scalars
+        scalar_name = _visualization_scalar_name(value, scalars)
+        if bool(filter_by_scalar_values):
+            value, filter_report = _filter_visualization_mesh(value, scalar_name, scalar_filter_values)
+            print(
+                f"Display-only filter: {filter_report['scalar']} = {filter_report['values']}; "
+                f"showing {filter_report['display_cells']} cells and {filter_report['display_points']} points."
+            )
         try:
-            return value.plot(scalars=scalar_name, show_edges=bool(show_edges), jupyter_backend="static")
+            return value.plot(scalars=scalar_name or None, show_edges=bool(show_edges), jupyter_backend="static")
         except Exception:
-            return value.plot(scalars=scalar_name, show_edges=bool(show_edges))
+            return value.plot(scalars=scalar_name or None, show_edges=bool(show_edges))
     display(value)
     return value
 
@@ -1834,17 +1910,33 @@ def ogs_identify_full_mesh(
     import pyvista as pv
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    input_path = output_path.with_name(output_path.stem + "_input.vtu")
-    mesh.cast_to_unstructured_grid().save(input_path, binary=True)
     executable = find_identify_subdomains(executable_path, ogs_bin_dir)
-    prefix = output_path.with_name(output_path.stem + "_tmp_")
-    command = [str(executable), "-f", "-m", str(input_path), "-s", f"{float(search_length):.16g}", "-o", str(prefix), "--", str(input_path)]
-    subprocess.run(command, check=True)
-    candidates = sorted(output_path.parent.glob(prefix.name + "*.vtu"), key=lambda item: item.stat().st_mtime, reverse=True)
-    if not candidates:
-        raise FileNotFoundError("identifySubdomains did not create an output VTU.")
-    shutil.move(str(candidates[0]), output_path)
+    with tempfile.TemporaryDirectory(prefix="gempy_ogs_identify_") as temporary_directory:
+        temporary_directory_path = Path(temporary_directory)
+        input_path = temporary_directory_path / (output_path.stem + "_input.vtu")
+        mesh.cast_to_unstructured_grid().save(input_path, binary=True)
+        prefix = temporary_directory_path / (output_path.stem + "_tmp_")
+        command = [str(executable), "-f", "-m", str(input_path), "-s", f"{float(search_length):.16g}", "-o", str(prefix), "--", str(input_path)]
+        subprocess.run(command, check=True)
+        candidates = _newest_existing_paths(temporary_directory_path.glob(prefix.name + "*.vtu"))
+        if not candidates:
+            raise FileNotFoundError("identifySubdomains did not create an output VTU.")
+        if output_path.exists():
+            output_path.unlink()
+        shutil.copy2(candidates[0], output_path)
     return pv.read(output_path)
+
+
+def _newest_existing_paths(paths: Iterable[Path]) -> List[Path]:
+    """Sort existing paths by mtime while tolerating concurrent disappearance."""
+    stamped_paths = []
+    for path in paths:
+        try:
+            stamped_paths.append((path.stat().st_mtime, path))
+        except FileNotFoundError:
+            continue
+    stamped_paths.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in stamped_paths]
 
 
 def _kadi_record_by_id(manager: Any, record_id: Any) -> Any:

@@ -120,6 +120,27 @@ def _remember_file_category(file_id: str, record: Dict[str, Any], category: Opti
         _save_category_index(cats)
 
 
+def _forget_file_category(
+    file_id: str,
+    record: Dict[str, Any],
+    remaining_records: Dict[str, Dict[str, Any]],
+) -> None:
+    """Remove category aliases that are no longer used by another file."""
+    cats = _load_category_index()
+    protected_keys = {
+        key
+        for remaining_file_id, remaining_record in remaining_records.items()
+        for key in _category_keys(remaining_file_id, remaining_record)
+    }
+    changed = False
+    for key in _category_keys(file_id, record):
+        if key not in protected_keys and key in cats:
+            cats.pop(key, None)
+            changed = True
+    if changed:
+        _save_category_index(cats)
+
+
 def _kind_dir(kind: Optional[str]) -> Path:
     return OUTPUT_DIR if kind == "output" else UPLOAD_DIR
 
@@ -385,6 +406,48 @@ def update_file_category(file_id: str, category: str) -> Dict[str, Any]:
     _save_index(index)
     _remember_file_category(file_id, record, category)
     return _normalize_record(file_id, record)
+
+
+def delete_uploaded_file(file_id: str) -> Dict[str, Any]:
+    """Delete one managed upload and remove its file-index metadata.
+
+    Only files physically located in ``workspace/uploads`` may be deleted.
+    This prevents a stale legacy absolute path from deleting a source file
+    elsewhere on the user's computer.
+    """
+    index, _stats = repair_index(remove_missing=False)
+    if file_id not in index:
+        raise FileNotFoundError(f"Unknown file_id: {file_id}")
+
+    record = dict(index[file_id])
+    if record.get("kind") != "upload":
+        raise ValueError(f"File is not an upload and cannot be deleted here: {file_id}")
+
+    existing_path = _resolve_existing_path(record)
+    deleted_from_disk = False
+    if existing_path is not None:
+        resolved_path = existing_path.resolve()
+        upload_root = UPLOAD_DIR.resolve()
+        try:
+            resolved_path.relative_to(upload_root)
+        except ValueError as exc:
+            raise PermissionError(
+                f"Refusing to delete an upload outside the managed upload directory: {resolved_path}"
+            ) from exc
+        resolved_path.unlink()
+        deleted_from_disk = True
+
+    index.pop(file_id, None)
+    persisted = {
+        fid: {key: value for key, value in item.items() if key != "exists"}
+        for fid, item in index.items()
+    }
+    _save_index(persisted)
+    _forget_file_category(file_id, record, persisted)
+
+    result = {key: value for key, value in record.items() if key not in {"path", "exists"}}
+    result["deleted_from_disk"] = deleted_from_disk
+    return result
 
 
 def get_file_record(file_id: str) -> Dict[str, Any]:

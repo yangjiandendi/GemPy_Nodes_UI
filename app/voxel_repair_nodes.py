@@ -4,8 +4,9 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import quote
 
 import numpy as np
@@ -1015,52 +1016,63 @@ def apply_ogs_identify_to_full_mesh(
 
     executable = find_identify_subdomains_executable(ogs_bin_dir)
 
-    temporary_prefix = (
-        final_output_path.parent
-        / f"_identify_tmp_{final_output_path.stem}_"
-    )
-
-    command = [
-        str(executable),
-        "-f",
-        "-m",
-        str(repaired_mesh_path),
-        "-s",
-        f"{search_length:.16g}",
-        "-o",
-        str(temporary_prefix),
-        "--",
-        str(repaired_mesh_path),
-    ]
-
-    print("Running:")
-    print(
-        subprocess.list2cmdline(command)
-        if os.name == "nt"
-        else shlex.join(command)
-    )
-
-    subprocess.run(command, check=True)
-
-    generated_candidates = sorted(
-        final_output_path.parent.glob(
-            f"{temporary_prefix.name}*.vtu"
-        ),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-
-    if not generated_candidates:
-        raise FileNotFoundError(
-            "identifySubdomains finished, but no output VTU was found."
+    # OGS creates and renames intermediate files while it is running.  Keeping
+    # those files inside a synchronised project tree (for example sciebo) can
+    # race with the sync client: a path returned by glob() may disappear before
+    # stat() is called.  Isolate the complete OGS transaction in the operating
+    # system's temporary directory and copy back only the completed VTU.
+    with tempfile.TemporaryDirectory(
+        prefix="gempy_ogs_identify_"
+    ) as temporary_directory:
+        temporary_directory_path = Path(temporary_directory)
+        working_input_path = (
+            temporary_directory_path / repaired_mesh_path.name
+        )
+        shutil.copy2(repaired_mesh_path, working_input_path)
+        temporary_prefix = (
+            temporary_directory_path
+            / f"_identify_tmp_{final_output_path.stem}_"
         )
 
-    generated_output = generated_candidates[0]
+        command = [
+            str(executable),
+            "-f",
+            "-m",
+            str(working_input_path),
+            "-s",
+            f"{search_length:.16g}",
+            "-o",
+            str(temporary_prefix),
+            "--",
+            str(working_input_path),
+        ]
 
-    if final_output_path.exists():
-        final_output_path.unlink()
+        print("Running:")
+        print(
+            subprocess.list2cmdline(command)
+            if os.name == "nt"
+            else shlex.join(command)
+        )
 
-    shutil.move(str(generated_output), str(final_output_path))
+        subprocess.run(command, check=True)
+
+        generated_candidates = _newest_existing_paths(
+            temporary_directory_path.glob(
+                f"{temporary_prefix.name}*.vtu"
+            )
+        )
+
+        if not generated_candidates:
+            raise FileNotFoundError(
+                "identifySubdomains finished, but no output VTU was found."
+            )
+
+        generated_output = generated_candidates[0]
+
+        if final_output_path.exists():
+            final_output_path.unlink()
+
+        shutil.copy2(generated_output, final_output_path)
 
     result = pv.read(final_output_path)
 
@@ -1123,6 +1135,18 @@ def apply_ogs_identify_to_full_mesh(
     print(f"Element mapping is identity: {element_identity}")
 
     return final_output_path
+
+
+def _newest_existing_paths(paths: Iterable[Path]) -> List[Path]:
+    """Sort existing paths by mtime while tolerating concurrent disappearance."""
+    stamped_paths = []
+    for path in paths:
+        try:
+            stamped_paths.append((path.stat().st_mtime, path))
+        except FileNotFoundError:
+            continue
+    stamped_paths.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in stamped_paths]
 
 class RepairReorderVoxelMeshNode(BaseNode):
     """Notebook Part 1: repair, clean, reorder, and optionally shift MaterialIDs."""

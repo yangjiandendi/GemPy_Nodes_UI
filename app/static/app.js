@@ -617,6 +617,42 @@ async function updateUploadFileCategory(file, newCategory) {
   }
 }
 
+async function deleteUploadFile(file, button=null) {
+  if (!file || !file.file_id) return;
+  const displayName = file.original_name || file.file_id;
+  const references = (state.nodes || []).filter(node => (
+    node.type === 'LoadUploadedFile' && node.params && node.params.file_id === file.file_id
+  ));
+  const referenceWarning = references.length
+    ? `\n\nWarning: ${references.length} Load Uploaded File node(s) currently reference this file. Those nodes will fail until another file is selected.`
+    : '';
+  const confirmed = confirm(
+    `Permanently delete uploaded file "${displayName}"?\n\nThis removes the stored file and cannot be undone.${referenceWarning}`
+  );
+  if (!confirmed) return;
+
+  const previousText = button ? button.textContent : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Deleting…';
+  }
+  try {
+    const out = await api(`/api/uploads/${encodeURIComponent(file.file_id)}`, {
+      method: 'DELETE',
+    });
+    state.uploads = out.files || state.uploads.filter(item => item.file_id !== file.file_id);
+    renderUploadList();
+    renderInspector();
+    showHint(`Deleted uploaded file ${displayName}`, 2400);
+  } catch (err) {
+    alert(String(err));
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousText;
+    }
+  }
+}
+
 function renderUploadFileItem(file) {
   const div = document.createElement('div');
   div.className = 'small-item upload-file-item';
@@ -631,6 +667,7 @@ function renderUploadFileItem(file) {
     ${suffix}
     <div class="file-item-actions">
       <button type="button" class="mini file-move-btn">Move folder</button>
+      <button type="button" class="mini danger file-delete-btn">Delete</button>
     </div>
     <div class="file-item-hint">click / drag → Load Uploaded File</div>
   `;
@@ -643,6 +680,14 @@ function renderUploadFileItem(file) {
       const next = prompt('Folder / category:', current);
       if (next === null) return;
       updateUploadFileCategory(file, next);
+    };
+  }
+  const deleteBtn = div.querySelector('.file-delete-btn');
+  if (deleteBtn) {
+    deleteBtn.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      deleteUploadFile(file, deleteBtn);
     };
   }
   div.onclick = () => addLoadUploadedFileNode(file);

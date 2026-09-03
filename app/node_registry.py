@@ -298,6 +298,8 @@ NODE_TYPES = [
         "params": [
             p("rows", "Table rows", "number", 15),
             p("mesh_scalars", "Mesh scalars", "text", "auto", help_text="Use auto to prefer MaterialIDs/id/lithology/layer. Or enter a cell/point data name."),
+            p("filter_by_scalar_values", "Only show selected scalar values", "boolean", False, help_text="Display-only mesh filter. Enable this and enter values below to show only matching cells/points. The upstream mesh is not changed."),
+            p("scalar_filter_values", "Scalar values to show", "text", "", help_text="Numeric value such as 2, or several comma-separated values such as 2,5,7. Uses the Mesh scalars field above."),
             p("show_edges", "Show mesh edges in preview", "boolean", False),
             p("generate_thumbnail", "Generate inline thumbnail", "boolean", True),
         ],

@@ -523,6 +523,176 @@ def _choose_mesh_scalar(mesh: Any, requested: str = "auto") -> str:
     return keys[0] if keys else ""
 
 
+def _parse_scalar_filter_values(raw_values: Any) -> List[float]:
+    """Parse a comma/semicolon separated list of numeric scalar values."""
+    if raw_values is None:
+        return []
+    if isinstance(raw_values, (list, tuple, np.ndarray)):
+        tokens = list(np.asarray(raw_values).ravel())
+    else:
+        text = str(raw_values).strip().replace(";", ",")
+        tokens = [token.strip() for token in text.split(",") if token.strip()]
+    values: List[float] = []
+    for token in tokens:
+        try:
+            value = float(token)
+        except (TypeError, ValueError) as exc:
+            raise NodeExecutionError(
+                f"Scalar filter values must be numeric and comma-separated; could not parse {token!r}."
+            ) from exc
+        if not np.isfinite(value):
+            raise NodeExecutionError(f"Scalar filter value must be finite, got {token!r}.")
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _filter_mesh_by_scalar_values(mesh: Any, requested_scalar: str, raw_values: Any) -> tuple[Any, Dict[str, Any]]:
+    """Return a display-only subset matching selected cell or point scalar values."""
+    scalar_name = _choose_mesh_scalar(mesh, requested_scalar)
+    if not scalar_name:
+        available = list(getattr(mesh, "cell_data", {}).keys()) + list(getattr(mesh, "point_data", {}).keys())
+        raise NodeExecutionError(
+            f"Visualization scalar filter could not find {requested_scalar!r}. Available scalars: {available}"
+        )
+    selected_values = _parse_scalar_filter_values(raw_values)
+    if not selected_values:
+        raise NodeExecutionError(
+            "Visualization scalar filter is enabled, but Scalar values to show is empty. "
+            "Enter one value such as 2, or several values such as 2,5,7."
+        )
+
+    if scalar_name in getattr(mesh, "cell_data", {}):
+        association = "cell"
+        source_values = np.asarray(mesh.cell_data[scalar_name])
+    else:
+        association = "point"
+        source_values = np.asarray(mesh.point_data[scalar_name])
+    if source_values.ndim != 1:
+        raise NodeExecutionError(
+            f"Visualization scalar filter requires a one-component scalar array; {scalar_name!r} "
+            f"has shape {list(source_values.shape)}."
+        )
+    try:
+        numeric_values = source_values.astype(float)
+    except (TypeError, ValueError) as exc:
+        raise NodeExecutionError(
+            f"Visualization scalar filter requires numeric values; {scalar_name!r} has dtype {source_values.dtype}."
+        ) from exc
+
+    mask = np.zeros(numeric_values.shape, dtype=bool)
+    for selected in selected_values:
+        mask |= np.isclose(numeric_values, selected, rtol=1e-9, atol=1e-9)
+    selected_count = int(np.count_nonzero(mask))
+    if selected_count == 0:
+        available_values = np.unique(numeric_values)
+        sample = available_values[:30].tolist()
+        raise NodeExecutionError(
+            f"No {association}s have {scalar_name} in {selected_values}. "
+            f"Available values (first 30): {sample}"
+        )
+
+    if association == "cell":
+        filtered = mesh.extract_cells(np.flatnonzero(mask))
+    else:
+        # Point-data filtering is displayed as the selected points only. Cell-data
+        # material filtering (the common MaterialIDs case) preserves whole cells.
+        filtered = mesh.extract_points(np.flatnonzero(mask), adjacent_cells=False, include_cells=False)
+
+    report = {
+        "enabled": True,
+        "scalar": scalar_name,
+        "association": association,
+        "values": selected_values,
+        "input_cells": int(getattr(mesh, "n_cells", 0)),
+        "input_points": int(getattr(mesh, "n_points", 0)),
+        "matching_values": selected_count,
+        "display_cells": int(getattr(filtered, "n_cells", 0)),
+        "display_points": int(getattr(filtered, "n_points", 0)),
+        "display_only": True,
+    }
+    return filtered, report
+
+
+def _mesh_runtime_suffix(mesh: Any) -> str:
+    """Choose a PyVista writer extension that matches the concrete dataset."""
+    class_name = mesh.__class__.__name__.lower()
+    if "unstructured" in class_name:
+        return ".vtu"
+    if "polydata" in class_name:
+        return ".vtp"
+    if "image" in class_name or "uniformgrid" in class_name:
+        return ".vti"
+    if "rectilinear" in class_name:
+        return ".vtr"
+    if "structured" in class_name:
+        return ".vts"
+    return ".vtk"
+
+
+def _visualization_mesh_preview(
+    mesh: Any,
+    *,
+    name: str,
+    file_id: str,
+    scalars: str,
+    show_edges: bool,
+    generate_thumbnail: bool,
+    filter_by_scalar_values: bool,
+    scalar_filter_values: Any,
+) -> Dict[str, Any]:
+    display_mesh = mesh
+    display_name = name
+    display_file_id = file_id
+    scalar = _choose_mesh_scalar(display_mesh, scalars)
+    filter_report: Optional[Dict[str, Any]] = None
+
+    if filter_by_scalar_values:
+        display_mesh, filter_report = _filter_mesh_by_scalar_values(display_mesh, scalars, scalar_filter_values)
+        scalar = str(filter_report["scalar"])
+        suffix = _mesh_runtime_suffix(display_mesh)
+        source_stem = Path(str(name)).stem or "mesh"
+        safe_scalar = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in scalar)
+        value_label = "_".join(str(value).replace(".", "p").replace("-", "m") for value in filter_report["values"])
+        display_name = f"{source_stem}_{safe_scalar}_{value_label}_display{suffix}"
+        display_path = make_runtime_path(Path(display_name).stem, suffix)
+        display_mesh.save(display_path)
+        record = register_output_file(display_path, display_name=display_name)
+        display_file_id = str(record["file_id"])
+    elif not display_file_id:
+        suffix = _mesh_runtime_suffix(display_mesh)
+        display_path = make_runtime_path(Path(str(name)).stem or "preview_mesh", suffix)
+        display_mesh.save(display_path)
+        record = register_output_file(display_path, display_name=f"{Path(str(name)).stem or 'preview_mesh'}{suffix}")
+        display_file_id = str(record["file_id"])
+
+    preview = _mesh_preview(display_mesh, display_name, display_file_id)
+    preview.update({"preview_type": "mesh"})
+    query = urlencode({"show_edges": str(show_edges).lower(), "scalars": scalar or ""})
+    preview["pyvista_preview_url"] = f"/api/pyvista/mesh/{display_file_id}?{query}"
+    preview["pyvista_button_label"] = "Enlarge / Open 3D"
+    _attach_web_surface_preview(preview, display_mesh, display_name, preferred_scalar=scalar or "", show_edges=show_edges)
+    preview["web_viewer_label"] = "Inline mesh viewer"
+    preview["inline_display"] = "web_3d_viewer"
+    if filter_report is not None:
+        preview["scalar_filter"] = filter_report
+        preview["filter_message"] = (
+            f"Display-only filter: {filter_report['scalar']} = "
+            f"{', '.join(str(value) for value in filter_report['values'])}. "
+            f"Showing {filter_report['display_cells']} cells and {filter_report['display_points']} points."
+        )
+    if generate_thumbnail:
+        thumb = _mesh_thumbnail(
+            display_mesh,
+            scalars=scalar,
+            show_edges=show_edges,
+            name=Path(str(display_name)).stem + "_preview",
+        )
+        if thumb:
+            preview.update(thumb)
+    return preview
+
+
 def _mesh_thumbnail(mesh: Any, *, scalars: str = "auto", show_edges: bool = False, name: str = "mesh_preview") -> Optional[Dict[str, Any]]:
     """Create a small PNG thumbnail for inline inspector preview.
 
@@ -1751,6 +1921,8 @@ class PreviewDataNode(BaseNode):
         scalars = str(params.get("mesh_scalars") or "auto")
         show_edges = _as_bool(params.get("show_edges"), False)
         generate_thumbnail = _as_bool(params.get("generate_thumbnail"), True)
+        filter_by_scalar_values = _as_bool(params.get("filter_by_scalar_values"), False)
+        scalar_filter_values = params.get("scalar_filter_values", "")
 
         candidates: List[tuple[str, RuntimeValue]] = []
 
@@ -1792,25 +1964,17 @@ class PreviewDataNode(BaseNode):
             elif kind == "mesh":
                 file_id = str(rv.metadata.get("file_id") or "") if rv.metadata else ""
                 mesh = rv.value
-                if not file_id:
-                    suffix = ".vtu" if "unstructured" in mesh.__class__.__name__.lower() else ".vtp"
-                    pth = make_runtime_path(Path(str(name)).stem or "preview_mesh", suffix)
-                    mesh.save(pth)
-                    rec = register_output_file(pth, display_name=f"{Path(str(name)).stem or 'preview_mesh'}{suffix}")
-                    file_id = rec["file_id"]
-                preview = _mesh_preview(mesh, name, file_id)
+                preview = _visualization_mesh_preview(
+                    mesh,
+                    name=name,
+                    file_id=file_id,
+                    scalars=scalars,
+                    show_edges=show_edges,
+                    generate_thumbnail=generate_thumbnail,
+                    filter_by_scalar_values=filter_by_scalar_values,
+                    scalar_filter_values=scalar_filter_values,
+                )
                 preview.update({"preview_type": "mesh", "source_port": port, "source_kind": kind})
-                scalar = _choose_mesh_scalar(mesh, scalars)
-                query = urlencode({"show_edges": str(show_edges).lower(), "scalars": scalar or ""})
-                preview["pyvista_preview_url"] = f"/api/pyvista/mesh/{file_id}?{query}"
-                preview["pyvista_button_label"] = "Enlarge / Open 3D"
-                _attach_web_surface_preview(preview, mesh, name, preferred_scalar=scalar or "", show_edges=show_edges)
-                preview["web_viewer_label"] = "Inline mesh viewer"
-                preview["inline_display"] = "web_3d_viewer"
-                if generate_thumbnail:
-                    thumb = _mesh_thumbnail(mesh, scalars=scalar, show_edges=show_edges, name=Path(str(name)).stem + "_preview")
-                    if thumb:
-                        preview.update(thumb)
 
             elif kind == "file":
                 file_id = str(rv.metadata.get("file_id") or "") if rv.metadata else ""
@@ -1819,7 +1983,22 @@ class PreviewDataNode(BaseNode):
                     rec = register_output_file(path, display_name=path.name)
                     file_id = rec["file_id"]
                     path = get_file_path(file_id)
-                preview = _file_preview(path, file_id=file_id, rows=rows, scalars=scalars, show_edges=show_edges)
+                if filter_by_scalar_values:
+                    if _infer_file_type_from_name(path.name, "auto") != "mesh":
+                        raise NodeExecutionError("Scalar-value filtering is available only for mesh files or mesh outputs.")
+                    preview = _visualization_mesh_preview(
+                        _read_mesh_from_path(path),
+                        name=path.name,
+                        file_id=file_id,
+                        scalars=scalars,
+                        show_edges=show_edges,
+                        generate_thumbnail=generate_thumbnail,
+                        filter_by_scalar_values=True,
+                        scalar_filter_values=scalar_filter_values,
+                    )
+                    preview["preview_type"] = "mesh_file"
+                else:
+                    preview = _file_preview(path, file_id=file_id, rows=rows, scalars=scalars, show_edges=show_edges)
                 preview.update({"source_port": port, "source_kind": kind, "name": name})
 
             elif kind == "array":

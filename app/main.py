@@ -26,6 +26,7 @@ from .storage import (
     UPLOAD_DIR,
     cleanup_generated_files,
     cleanup_missing_files,
+    delete_uploaded_file,
     get_file_record,
     get_file_path,
     import_uploaded_file_with_record,
@@ -228,7 +229,10 @@ def _launch_gempy_standalone_popup(config: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/version")
@@ -303,6 +307,26 @@ def set_upload_category(payload: Dict[str, Any]) -> Dict[str, Any]:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"ok": True, "file": {k: v for k, v in file_record.items() if k != "path"}, "files": list_files(kind="upload")}
+
+
+@app.delete("/api/uploads/{file_id}")
+def delete_upload(file_id: str) -> Dict[str, Any]:
+    file_id = str(file_id or "").strip()
+    if not file_id:
+        raise HTTPException(status_code=400, detail="Missing file_id")
+    try:
+        deleted = delete_uploaded_file(file_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "files": list_files(kind="upload"),
+    }
 
 
 @app.post("/api/upload")
