@@ -613,7 +613,7 @@ NODE_TYPES = [
             p("max_voxels", "Max candidate voxels", "number", 2000000),
             p("padding", "Padding around mesh bounds", "number", 0.0),
             p("voxelization_mode", "Voxelization mode", "select", "inside_surface", ["inside_surface", "distance_to_surface"], help_text="inside_surface is for closed solids. distance_to_surface is recommended for open fault/sheet meshes and avoids ray-casting fringe artifacts."),
-            p("distance_buffer", "Distance buffer for surface mode", "text", "", help_text="Only used for distance_to_surface. Leave empty to use ~0.75×min voxel size, or set the desired fault buffer thickness."),
+            p("distance_buffer", "Distance radius override (surface mode)", "text", "", help_text="Distance-to-surface radius, NOT total thickness. After Thicken Mesh, leave empty to preserve its thickness: voxelization uses the retained centre surface and half the Thicken thickness, without adding another buffer. An explicit value overrides that half-width (total target width = 2 × radius). For an unthickened surface only, the empty default is 0.75 × min voxel size. Coarse voxels may under-resolve thin features."),
             p("distance_chunk_size", "Distance chunk size", "number", 200000),
             p("source_scalar", "Source scalar", "text", "auto", help_text="Cell/point scalar from the mesh to transfer to voxel cells."),
             p("output_scalar_name", "Output scalar name", "text", "MaterialIDs"),

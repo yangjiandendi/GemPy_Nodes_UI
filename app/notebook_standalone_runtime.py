@@ -1019,36 +1019,23 @@ def combine_meshes(meshes: Sequence[Any], merge_points: bool = False, clean_outp
     return result
 
 
-def thicken_mesh(mesh: Any, distance: float, mode: str = "symmetric", close_sides: bool = True):
-    """Create a simple normal-offset shell from a surface mesh."""
-    import pyvista as pv
-    surface = mesh.extract_surface().triangulate().compute_normals(
-        point_normals=True,
-        cell_normals=False,
-        consistent_normals=True,
-        auto_orient_normals=True,
-        inplace=False,
-    )
-    normals = np.asarray(surface.point_data["Normals"])
-    if mode == "outward":
-        inner_points = np.asarray(surface.points)
-        outer_points = inner_points + normals * float(distance)
-    elif mode == "inward":
-        outer_points = np.asarray(surface.points)
-        inner_points = outer_points - normals * float(distance)
-    else:
-        inner_points = np.asarray(surface.points) - normals * float(distance) / 2.0
-        outer_points = np.asarray(surface.points) + normals * float(distance) / 2.0
-    inner = surface.copy(deep=True); inner.points = inner_points
-    outer = surface.copy(deep=True); outer.points = outer_points
-    shell = inner.merge(outer, merge_points=False)
-    if close_sides:
-        edges = surface.extract_feature_edges(boundary_edges=True, feature_edges=False, manifold_edges=False, non_manifold_edges=False)
-        if edges.n_cells:
-            # PyVista's extrusion gives a robust side wall for the boundary edges.
-            walls = edges.extrude([0, 0, 0], capping=False)
-            shell = shell.merge(walls, merge_points=False)
-    return shell.clean()
+def _editor_geometry_helpers():
+    """Use embedded pure geometry in notebooks, or the sibling module locally."""
+    if "_GEOMETRY_NAMESPACE" not in globals():
+        if "NOTEBOOK_GEOMETRY_SOURCE" in globals():
+            namespace = {}
+            exec(compile(NOTEBOOK_GEOMETRY_SOURCE, "embedded_geometry", "exec"), namespace)
+        else:
+            from . import notebook_geometry_helpers
+            namespace = vars(notebook_geometry_helpers)
+        globals()["_GEOMETRY_NAMESPACE"] = namespace
+    return globals()["_GEOMETRY_NAMESPACE"]
+
+
+def thicken_mesh(mesh: Any, distance: float, mode: str = "symmetric", close_sides: bool = True, **kwargs):
+    """Use the editor's normal-offset shell and preserve the distance centre sheet."""
+    return _editor_geometry_helpers()["_build_normal_thickened_mesh"](
+        mesh, distance=distance, mode=mode, close_sides=close_sides, **kwargs)[0]
 
 
 
@@ -2257,6 +2244,7 @@ def mesh_to_voxel_model(
     padding: float = 0.0,
     voxelization_mode: str = "inside_surface",
     distance_buffer: Any = None,
+    distance_chunk_size: int = 200_000,
     source_scalar: str = "auto",
     output_scalar_name: str = "MaterialIDs",
     inside_tolerance: float = 1e-6,
@@ -2266,6 +2254,12 @@ def mesh_to_voxel_model(
     import pyvista as pv
     from scipy.spatial import cKDTree
     surface = mesh.extract_surface().triangulate()
+    mode = str(voxelization_mode).lower()
+    if mode == "distance_to_surface" and "thickening_reference_points" in mesh.field_data:
+        surface = pv.PolyData(np.asarray(mesh.field_data["thickening_reference_points"]),
+                             np.asarray(mesh.field_data["thickening_reference_faces"], dtype=np.int64)).triangulate()
+        if as_float(distance_buffer, None) is None:
+            distance_buffer = float(mesh.field_data["thickening_half_width"][0])
     bounds = np.asarray(surface.bounds, dtype=float)
     lengths = np.asarray([bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4]], dtype=float)
     sx = as_float(voxel_size, None)
@@ -2274,28 +2268,92 @@ def mesh_to_voxel_model(
     sy = as_float(voxel_size_y, sx) or sx
     sz = as_float(voxel_size_z, sx) or sx
     spacing = np.asarray([sx, sy, sz], dtype=float)
+    if mode == "distance_to_surface":
+        padding = max(float(padding), as_float(distance_buffer, 0.75*float(np.min(spacing))))
     lower = np.asarray([bounds[0], bounds[2], bounds[4]], dtype=float) - float(padding)
     upper = np.asarray([bounds[1], bounds[3], bounds[5]], dtype=float) + float(padding)
     counts = np.maximum(np.ceil((upper-lower)/spacing).astype(int), 1)
     if int(np.prod(counts)) > int(max_voxels):
         raise ValueError(f"Candidate voxel count {int(np.prod(counts)):,} exceeds max_voxels={int(max_voxels):,}.")
     grid = pv.ImageData(dimensions=tuple((counts+1).tolist()), spacing=tuple(spacing.tolist()), origin=tuple(lower.tolist()))
-    centers = np.asarray(grid.cell_centers().points)
-    points = pv.PolyData(centers)
     mode = str(voxelization_mode).lower()
     if mode == "distance_to_surface":
-        sampled = points.compute_implicit_distance(surface)
         threshold = as_float(distance_buffer, 0.75*float(np.min(spacing)))
-        selected = np.abs(np.asarray(sampled.point_data["implicit_distance"])) <= float(threshold)
+        # Use unsigned closest-point distances.  ``compute_implicit_distance``
+        # rebuilds a VTK implicit-distance pipeline for every chunk and can
+        # terminate the Python process on large/open or non-manifold sheets.
+        # ``find_closest_cell`` reuses VTK's cell locator and is both stable and
+        # exact for the distance test needed by this mode.  VTK ImageData cell
+        # ids vary X fastest.
+        nx, ny, nz = [int(v) for v in counts]
+        total = int(nx * ny * nz)
+        chunk_size = max(int(distance_chunk_size or 200_000), 1)
+        selected_id_chunks = []
+        xy_stride = int(nx * ny)
+        for start in range(0, total, chunk_size):
+            stop = min(start + chunk_size, total)
+            flat = np.arange(start, stop, dtype=np.int64)
+            ix = flat % nx
+            iy = (flat // nx) % ny
+            iz = flat // xy_stride
+            chunk_centers = np.column_stack((
+                lower[0] + (ix + 0.5) * spacing[0],
+                lower[1] + (iy + 0.5) * spacing[1],
+                lower[2] + (iz + 0.5) * spacing[2],
+            ))
+            _closest_cells, closest_points = surface.find_closest_cell(
+                chunk_centers,
+                return_closest_point=True,
+            )
+            distances = np.linalg.norm(
+                chunk_centers - np.asarray(closest_points, dtype=float),
+                axis=1,
+            )
+            chunk_mask = distances <= float(threshold)
+            if np.any(chunk_mask):
+                selected_id_chunks.append(flat[chunk_mask])
+        selected_ids = (
+            np.concatenate(selected_id_chunks)
+            if selected_id_chunks else np.empty(0, dtype=np.int64)
+        )
     else:
-        selected_points = points.select_enclosed_points(surface, tolerance=float(inside_tolerance), check_surface=bool(check_surface))
-        selected = np.asarray(selected_points.point_data["SelectedPoints"]).astype(bool)
-        if invert_inside: selected = ~selected
-    voxel_grid = grid.extract_cells(np.flatnonzero(selected))
+        # Chunk closed-surface classification as well.  A 10 m cube contains
+        # one million candidate centers; materializing the full PolyData and
+        # SelectedPoints arrays at once can terminate constrained kernels.
+        nx, ny, nz = [int(v) for v in counts]
+        total = int(nx * ny * nz)
+        chunk_size = max(int(distance_chunk_size or 200_000), 1)
+        selected_id_chunks = []
+        xy_stride = int(nx * ny)
+        for start in range(0, total, chunk_size):
+            stop = min(start + chunk_size, total)
+            flat = np.arange(start, stop, dtype=np.int64)
+            ix = flat % nx
+            iy = (flat // nx) % ny
+            iz = flat // xy_stride
+            chunk_centers = np.column_stack((
+                lower[0] + (ix + 0.5) * spacing[0],
+                lower[1] + (iy + 0.5) * spacing[1],
+                lower[2] + (iz + 0.5) * spacing[2],
+            ))
+            selected_points = pv.PolyData(chunk_centers).select_enclosed_points(
+                surface,
+                tolerance=float(inside_tolerance),
+                check_surface=bool(check_surface),
+            )
+            chunk_mask = np.asarray(selected_points.point_data["SelectedPoints"]).astype(bool)
+            if invert_inside:
+                chunk_mask = ~chunk_mask
+            if np.any(chunk_mask):
+                selected_id_chunks.append(flat[chunk_mask])
+        selected_ids = (
+            np.concatenate(selected_id_chunks)
+            if selected_id_chunks else np.empty(0, dtype=np.int64)
+        )
+    voxel_grid = grid.extract_cells(selected_ids)
     scalar_name = source_scalar
     if scalar_name in {"", "auto", None}:
-        candidates = list(mesh.cell_data.keys()) + list(mesh.point_data.keys())
-        scalar_name = next((name for name in ["MaterialIDs", "combined_element_id", "id", "lith_block"] if name in candidates), candidates[0] if candidates else None)
+        scalar_name = _editor_geometry_helpers()["_choose_mesh_scalar"](mesh, "auto")
     if scalar_name:
         source_centers = np.asarray(mesh.cell_centers().points)
         tree = cKDTree(source_centers)
@@ -2350,42 +2408,159 @@ def merge_voxel_models(
     reindex_scope: str = "source_and_value",
     reindex_start_id: int = 1,
     first_input_wins: bool = True,
+    target_voxel_size_mode: str = "smallest_input",
+    resample_to_target_grid: bool = True,
+    voxel_size: Any = None,
+    voxel_size_y: Any = None,
+    voxel_size_z: Any = None,
+    max_merged_voxels: int = 2_000_000,
 ):
     import pyvista as pv
-    if not meshes: raise ValueError("At least one voxel model is required.")
-    all_centers = [np.asarray(mesh.cell_centers().points) for mesh in meshes]
-    spacings = [np.asarray([_infer_spacing_from_centers(c[:,0]),_infer_spacing_from_centers(c[:,1]),_infer_spacing_from_centers(c[:,2])]) for c in all_centers]
-    spacing = np.min(np.vstack(spacings),axis=0)
-    origin = np.min(np.vstack([c.min(axis=0) for c in all_centers]),axis=0)
-    entries: Dict[tuple[int,int,int], tuple[int,Any,int]] = {}
-    mapping: Dict[tuple[Any,...],int] = {}
-    next_id = int(reindex_start_id)
-    sequence = list(range(len(meshes)-1,-1,-1)) if first_input_wins else list(range(len(meshes)))
-    for source_index in sequence:
-        mesh=meshes[source_index]; centers=all_centers[source_index]
+    if not meshes:
+        raise ValueError("At least one voxel model is required.")
+
+    def infer_grid_spacing(mesh: Any, centers: np.ndarray) -> np.ndarray:
+        inferred = []
+        bounds = np.asarray(mesh.bounds, dtype=float)
+        for axis in range(3):
+            values = np.unique(np.round(centers[:, axis], 8))
+            if values.size >= 2:
+                diffs = np.diff(values)
+                diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+                inferred.append(float(np.median(diffs)) if diffs.size else 1.0)
+            else:
+                width = float(abs(bounds[axis * 2 + 1] - bounds[axis * 2]))
+                inferred.append(width if width > 0 else 1.0)
+        return np.asarray(inferred, dtype=float)
+
+    all_centers = [np.asarray(mesh.cell_centers().points, dtype=float) for mesh in meshes]
+    source_spacings = [infer_grid_spacing(mesh, centers) for mesh, centers in zip(meshes, all_centers)]
+    manual_x = None if voxel_size in {None, ""} else float(voxel_size)
+    if manual_x is not None and manual_x > 0:
+        manual_y = float(voxel_size_y) if voxel_size_y not in {None, ""} else manual_x
+        manual_z = float(voxel_size_z) if voxel_size_z not in {None, ""} else manual_x
+        spacing = np.asarray([manual_x, manual_y, manual_z], dtype=float)
+    else:
+        spacing_rows = np.vstack(source_spacings)
+        mode = str(target_voxel_size_mode or "smallest_input").strip().lower()
+        if mode in {"first", "first_input", "input_0"}:
+            spacing = spacing_rows[0]
+        elif mode in {"largest", "largest_input", "coarsest"}:
+            spacing = np.max(spacing_rows, axis=0)
+        elif mode in {"median", "median_input"}:
+            spacing = np.median(spacing_rows, axis=0)
+        else:
+            spacing = np.min(spacing_rows, axis=0)
+
+    all_bounds = np.asarray([mesh.bounds for mesh in meshes], dtype=float)
+    union_low = np.asarray([
+        np.min(all_bounds[:, 0]),
+        np.min(all_bounds[:, 2]),
+        np.min(all_bounds[:, 4]),
+    ], dtype=float)
+    first_low = np.asarray([meshes[0].bounds[0], meshes[0].bounds[2], meshes[0].bounds[4]], dtype=float)
+    origin = first_low + np.floor((union_low - first_low) / spacing) * spacing
+
+    source_entries = []
+    value_order = []
+    seen_map_keys = set()
+    for source_index, (mesh, centers, source_spacing) in enumerate(zip(meshes, all_centers, source_spacings)):
         scalar = cell_data_name
         if scalar in {"", "auto", None}:
-            scalar = next((n for n in ["MaterialIDs","combined_element_id","id","lith_block"] if n in mesh.cell_data), next(iter(mesh.cell_data.keys()),None))
-        values=np.asarray(mesh.cell_data[scalar]) if scalar else np.ones(mesh.n_cells)
-        indices=np.rint((centers-origin)/spacing).astype(int)
-        for local,(key_arr,value) in enumerate(zip(indices,values)):
-            key=tuple(map(int,key_arr))
-            map_key=(source_index,str(value)) if reindex_scope=="source_and_value" else (str(value),)
-            if map_key not in mapping:
-                mapping[map_key]=next_id; next_id+=1
-            entries[key]=(source_index,mapping[map_key],local)
-    keys=np.asarray(list(entries.keys()),dtype=int)
-    if not len(keys): return pv.UnstructuredGrid()
-    mins=keys.min(axis=0); maxs=keys.max(axis=0); dims=maxs-mins+1
-    grid=pv.ImageData(dimensions=tuple((dims+1).tolist()),spacing=tuple(spacing.tolist()),origin=tuple((origin+mins*spacing-spacing/2).tolist()))
-    full_indices=np.arange(int(np.prod(dims))).reshape(tuple(dims),order="F")
-    selected_ids=[]; scalar_values=[]; source_values=[]
-    for key,(src,value,_) in entries.items():
-        relative=np.asarray(key)-mins
-        selected_ids.append(int(full_indices[tuple(relative)])); scalar_values.append(value); source_values.append(src)
-    result=grid.extract_cells(np.asarray(selected_ids,dtype=int))
-    result.cell_data[output_scalar_name]=np.asarray(scalar_values,dtype=np.int32)
-    result.cell_data["merge_source_index"]=np.asarray(source_values,dtype=np.int32)
+            scalar = next(
+                (name for name in ["MaterialIDs", "combined_element_id", "id", "lith_block"] if name in mesh.cell_data),
+                next(iter(mesh.cell_data.keys()), None),
+            )
+        values = np.asarray(mesh.cell_data[scalar]) if scalar else np.ones(mesh.n_cells)
+        entries_for_source = []
+        for local, (center, value) in enumerate(zip(centers, values)):
+            value_python = value.item() if hasattr(value, "item") else value
+            value_key = str(value_python)
+            map_key = (source_index, str(scalar), value_key) if reindex_scope == "source_and_value" else ("global", value_key)
+            if map_key not in seen_map_keys:
+                seen_map_keys.add(map_key)
+                value_order.append(map_key)
+
+            if resample_to_target_grid:
+                try:
+                    points = np.asarray(mesh.get_cell(int(local)).points, dtype=float)
+                    bounds = np.asarray([
+                        np.min(points[:, 0]), np.max(points[:, 0]),
+                        np.min(points[:, 1]), np.max(points[:, 1]),
+                        np.min(points[:, 2]), np.max(points[:, 2]),
+                    ], dtype=float)
+                except Exception:
+                    half = source_spacing / 2.0
+                    bounds = np.asarray([
+                        center[0] - half[0], center[0] + half[0],
+                        center[1] - half[1], center[1] + half[1],
+                        center[2] - half[2], center[2] + half[2],
+                    ], dtype=float)
+                ranges = []
+                for axis, (low, high) in enumerate([(bounds[0], bounds[1]), (bounds[2], bounds[3]), (bounds[4], bounds[5])]):
+                    imin = int(np.ceil((low - origin[axis]) / spacing[axis] - 0.5 - 1e-9))
+                    imax = int(np.floor((high - origin[axis]) / spacing[axis] - 0.5 + 1e-9))
+                    if imax < imin:
+                        fallback = int(np.floor((center[axis] - origin[axis]) / spacing[axis]))
+                        ranges.append([fallback])
+                    else:
+                        ranges.append(range(imin, imax + 1))
+                target_keys = [
+                    (int(i), int(j), int(k))
+                    for i in ranges[0]
+                    for j in ranges[1]
+                    for k in ranges[2]
+                ]
+            else:
+                target_keys = [tuple(np.floor((center - origin) / spacing).astype(int).tolist())]
+
+            for key in target_keys:
+                entries_for_source.append((key, map_key, int(local)))
+                if len(entries_for_source) > int(max_merged_voxels):
+                    raise ValueError(f"Source {source_index} exceeds max_merged_voxels={int(max_merged_voxels):,}.")
+        source_entries.append(entries_for_source)
+
+    occupied: Dict[tuple[int, int, int], tuple[int, tuple[Any, ...], int]] = {}
+    sequence = list(range(len(meshes) - 1, -1, -1)) if first_input_wins else list(range(len(meshes)))
+    for source_index in sequence:
+        for key, map_key, local in source_entries[source_index]:
+            occupied[key] = (source_index, map_key, local)
+        if len(occupied) > int(max_merged_voxels):
+            raise ValueError(f"Merged voxel model exceeds max_merged_voxels={int(max_merged_voxels):,}.")
+
+    if not occupied:
+        return pv.UnstructuredGrid()
+
+    final_map_keys = {entry[1] for entry in occupied.values()}
+    mapping = {}
+    next_id = int(reindex_start_id)
+    for map_key in value_order:
+        if map_key in final_map_keys and map_key not in mapping:
+            mapping[map_key] = next_id
+            next_id += 1
+
+    keys = np.asarray(list(occupied.keys()), dtype=int)
+    mins = keys.min(axis=0)
+    maxs = keys.max(axis=0)
+    dims = maxs - mins + 1
+    grid = pv.ImageData(
+        dimensions=tuple((dims + 1).tolist()),
+        spacing=tuple(spacing.tolist()),
+        origin=tuple((origin + mins * spacing).tolist()),
+    )
+    full_indices = np.arange(int(np.prod(dims))).reshape(tuple(dims), order="F")
+    rows = []
+    for key, (source_index, map_key, local) in occupied.items():
+        relative = np.asarray(key) - mins
+        cell_id = int(full_indices[tuple(relative)])
+        rows.append((cell_id, mapping[map_key], source_index, local))
+    rows.sort(key=lambda row: row[0])
+
+    selected_ids = np.asarray([row[0] for row in rows], dtype=int)
+    result = grid.extract_cells(selected_ids)
+    result.cell_data[output_scalar_name] = np.asarray([row[1] for row in rows], dtype=np.int32)
+    result.cell_data["merge_source_index"] = np.asarray([row[2] for row in rows], dtype=np.int32)
+    result.cell_data["merge_source_cell"] = np.asarray([row[3] for row in rows], dtype=np.int32)
     return result
 
 
@@ -2400,24 +2575,14 @@ def hex_mesh_to_voxel_grid(mesh: Any, material_scalar: str = "auto", output_mate
     return grid
 
 
-def extract_voxel_boundaries(mesh: Any, output_dir: Path, output_prefix: str = "voxel", cell_data_name: str = "MaterialIDs", triangulate_shells: bool = True):
-    """Extract and save six external boundary parts while preserving VTK arrays."""
+def extract_voxel_boundaries(mesh: Any, output_dir: Path, output_prefix: str = "voxel", cell_data_name: str = "MaterialIDs", triangulate_shells: bool = True, decimals: int = 8, add_top_risers: bool = True):
+    """Use the editor's footprint sectors and terrain roof, including step risers."""
     import pyvista as pv
     output_dir=Path(output_dir); output_dir.mkdir(parents=True,exist_ok=True)
-    surface=mesh.extract_surface(pass_pointid=True,pass_cellid=True)
-    surface=surface.compute_normals(cell_normals=True,point_normals=False,auto_orient_normals=False,inplace=False)
-    normals=np.asarray(surface.cell_data["Normals"])
-    labels={
-        "top": np.flatnonzero(normals[:,2] > 0.5),
-        "bottom": np.flatnonzero(normals[:,2] < -0.5),
-        "east": np.flatnonzero(normals[:,0] > 0.5),
-        "west": np.flatnonzero(normals[:,0] < -0.5),
-        "north": np.flatnonzero(normals[:,1] > 0.5),
-        "south": np.flatnonzero(normals[:,1] < -0.5),
-    }
-    boundaries={name: surface.extract_cells(ids).extract_surface() for name,ids in labels.items()}
+    algorithms=_editor_geometry_helpers()["ExtractVoxelBoundariesNode"]
+    boundaries=algorithms.extract_boundaries_from_voxel_grid(mesh, cell_data_name=cell_data_name, decimals=decimals, add_top_risers=add_top_risers)
     side_mesh=boundaries["north"].merge(boundaries["south"]).merge(boundaries["east"]).merge(boundaries["west"])
-    full_shell=surface
+    full_shell=boundaries['top'].merge(boundaries['bottom']).merge(side_mesh)
     if triangulate_shells:
         side_mesh=side_mesh.triangulate(); full_shell=full_shell.triangulate()
     boundaries["side_mesh"]=side_mesh; boundaries["full_shell"]=full_shell
@@ -2437,53 +2602,15 @@ def repair_reorder_voxel_mesh(
     add_node_material_ids: bool = True,
     keep_original_order_ids: bool = False,
     reindex_material_ids_from_zero: bool = True,
+    **repair_params,
 ):
-    """General repair/reorder export.
-
-    The standalone version performs the deterministic parts of the editor node:
-    bottom clipping, stale-ID removal, cell ordering, node ordering and zero-based
-    material reindexing. For project-specific bottom-hole filling, retain the
-    explicit repair function from the source notebook before this call.
-    """
-    import pyvista as pv
-    grid=mesh.cast_to_unstructured_grid().copy(deep=True)
-    centers=np.asarray(grid.cell_centers().points)
-    dz=_infer_spacing_from_centers(centers[:,2],decimals=6)
-    keep=(centers[:,2]-dz/2.0)>=float(bottom_z)-1e-6
-    grid=grid.extract_cells(np.flatnonzero(keep))
-    stale_point={"bulk_node_ids","vtkOriginalPointIds","PointMergeMap"}
-    stale_cell={"bulk_element_ids","vtkOriginalCellIds","merge_source_index","merge_source_cell","number_bulk_elements"}
-    if remove_stale_mapping_arrays:
-        for name in list(grid.point_data.keys()):
-            if name in stale_point: del grid.point_data[name]
-        for name in list(grid.cell_data.keys()):
-            if name in stale_cell: del grid.cell_data[name]
-    if material_array not in grid.cell_data: raise KeyError(material_array)
-    connectivity=np.asarray(grid.cell_connectivity,dtype=np.int64).reshape(grid.n_cells,-1)
-    centers=np.asarray(grid.cell_centers().points); materials=np.asarray(grid.cell_data[material_array]).reshape(-1)
-    order=np.lexsort((centers[:,0],centers[:,1],centers[:,2],materials))
-    sorted_conn=connectivity[order]; flat=sorted_conn.reshape(-1)
-    first=np.full(grid.n_points,np.iinfo(np.int64).max,dtype=np.int64); np.minimum.at(first,flat,np.arange(flat.size,dtype=np.int64))
-    node_order=np.argsort(first,kind="stable"); old_to_new=np.empty(grid.n_points,dtype=np.int64); old_to_new[node_order]=np.arange(grid.n_points)
-    cell_type=int(np.unique(grid.celltypes)[0])
-    result=pv.UnstructuredGrid({pv.CellType(cell_type): old_to_new[sorted_conn]},np.asarray(grid.points)[node_order])
-    for name,array in grid.point_data.items():
-        if np.asarray(array).shape[0]==grid.n_points: result.point_data[name]=np.asarray(array)[node_order]
-    for name,array in grid.cell_data.items():
-        if np.asarray(array).shape[0]==grid.n_cells: result.cell_data[name]=np.asarray(array)[order]
-    sorted_materials=np.asarray(result.cell_data[material_array]).reshape(-1)
-    if add_node_material_ids:
-        source_positions=first[node_order]//sorted_conn.shape[1]
-        valid=first[node_order]!=np.iinfo(np.int64).max
-        node_materials=np.full(result.n_points,-1,dtype=sorted_materials.dtype); node_materials[valid]=sorted_materials[source_positions[valid]]
-        result.point_data["NodeMaterialIDs"]=node_materials
-    if keep_original_order_ids:
-        result.point_data["OriginalNodeIDs"]=node_order.astype(np.uint64); result.cell_data["OriginalElementIDs"]=order.astype(np.uint64)
-    if reindex_material_ids_from_zero:
-        unique=np.unique(sorted_materials); result.cell_data[material_array]=np.searchsorted(unique,sorted_materials).astype(np.int32)
-        if "NodeMaterialIDs" in result.point_data:
-            values=np.asarray(result.point_data["NodeMaterialIDs"]); mapped=np.full(values.shape,-1,dtype=np.int32); valid=np.isin(values,unique); mapped[valid]=np.searchsorted(unique,values[valid]); result.point_data["NodeMaterialIDs"]=mapped
-    return result
+    """Run the complete editor repair, support-column cleanup and reordering."""
+    params = dict(repair_params, material_array=material_array, bottom_z=bottom_z,
+                  remove_stale_mapping_arrays=remove_stale_mapping_arrays,
+                  add_node_material_ids=add_node_material_ids,
+                  keep_original_order_ids=keep_original_order_ids,
+                  reindex_material_ids_from_zero=reindex_material_ids_from_zero)
+    return _editor_geometry_helpers()["editor_repair"](mesh, params)
 
 
 def apply_gempy_edits(

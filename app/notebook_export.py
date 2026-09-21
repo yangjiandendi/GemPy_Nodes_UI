@@ -599,7 +599,7 @@ def _node_code(
         source = _one(inputs, "mesh")
         file_name = str(params.get("output_file_name") or "thickened_mesh.vtp")
         lines += [
-            f"{out('mesh')} = thicken_mesh({source}, distance={float(params.get('buffer_distance', 0) or 0)}, mode={_py(params.get('mode', 'symmetric'))}, close_sides={bool(params.get('close_sides', True))})",
+            f"{out('mesh')} = thicken_mesh({source}, distance={float(params.get('buffer_distance', 0) or 0)}, mode={_py(params.get('mode', 'symmetric'))}, close_sides={bool(params.get('close_sides', True))}, triangulate={bool(params.get('triangulate_input', True))}, consistent_normals={bool(params.get('consistent_normals', True))}, auto_orient_normals={bool(params.get('auto_orient_normals', True))}, flip_normals={bool(params.get('flip_normals', False))}, clean_input={bool(params.get('clean_input', True))}, clean_output={bool(params.get('clean_output', True))})",
             f"visualize({out('mesh')}, scalars={_py(params.get('mesh_scalars', 'auto'))}, show_edges={bool(params.get('show_edges', True))})",
         ]
         if "file" in outputs:
@@ -796,7 +796,7 @@ def _node_code(
             source = f"load_input_file({selected}).get('mesh')"
         file_name = str(params.get("file_name") or "mesh_voxel_model.vtu")
         lines += [
-            f"{out('voxel_model')} = mesh_to_voxel_model({source}, voxel_size={_py(params.get('voxel_size'))}, voxel_size_y={_py(params.get('voxel_size_y'))}, voxel_size_z={_py(params.get('voxel_size_z'))}, target_cells_longest_axis={int(params.get('target_cells_longest_axis', 80) or 80)}, max_voxels={int(params.get('max_voxels', 2000000) or 2000000)}, padding={float(params.get('padding', 0.0) or 0.0)}, voxelization_mode={_py(params.get('voxelization_mode', 'inside_surface'))}, distance_buffer={_py(params.get('distance_buffer'))}, source_scalar={_py(params.get('source_scalar', 'auto'))}, output_scalar_name={_py(params.get('output_scalar_name', 'MaterialIDs'))}, inside_tolerance={float(params.get('inside_tolerance', 1e-6) or 1e-6)}, check_surface={bool(params.get('check_surface', False))}, invert_inside={bool(params.get('invert_inside', False))})",
+            f"{out('voxel_model')} = mesh_to_voxel_model({source}, voxel_size={_py(params.get('voxel_size'))}, voxel_size_y={_py(params.get('voxel_size_y'))}, voxel_size_z={_py(params.get('voxel_size_z'))}, target_cells_longest_axis={int(params.get('target_cells_longest_axis', 80) or 80)}, max_voxels={int(params.get('max_voxels', 2000000) or 2000000)}, padding={float(params.get('padding', 0.0) or 0.0)}, voxelization_mode={_py(params.get('voxelization_mode', 'inside_surface'))}, distance_buffer={_py(params.get('distance_buffer'))}, distance_chunk_size={int(params.get('distance_chunk_size', 200000) or 200000)}, source_scalar={_py(params.get('source_scalar', 'auto'))}, output_scalar_name={_py(params.get('output_scalar_name', 'MaterialIDs'))}, inside_tolerance={float(params.get('inside_tolerance', 1e-6) or 1e-6)}, check_surface={bool(params.get('check_surface', False))}, invert_inside={bool(params.get('invert_inside', False))})",
             f"{out('voxel_grid')} = {out('voxel_model')}",
             f"{out('file')} = save_mesh({out('voxel_model')}, OUTPUT_DIR / {_py(file_name)})",
             f"{out('report')} = {{'n_cells': int({out('voxel_model')}.n_cells), 'n_points': int({out('voxel_model')}.n_points), 'file': str({out('file')})}}",
@@ -821,7 +821,7 @@ def _node_code(
         models = _many(inputs, "voxel_models")
         file_name = str(params.get("file_name") or "merged_voxel_model.vtu")
         lines += [
-            f"{out('voxel_model')} = merge_voxel_models([{', '.join(models)}], cell_data_name={_py(params.get('cell_data_name', 'auto'))}, output_scalar_name={_py(params.get('output_scalar_name', 'MaterialIDs'))}, reindex_scope={_py(params.get('reindex_scope', 'source_and_value'))}, reindex_start_id={int(params.get('reindex_start_id', 1) or 1)}, first_input_wins={bool(params.get('first_input_wins', True))})",
+            f"{out('voxel_model')} = merge_voxel_models([{', '.join(models)}], cell_data_name={_py(params.get('cell_data_name', 'auto'))}, output_scalar_name={_py(params.get('output_scalar_name', 'MaterialIDs'))}, reindex_scope={_py(params.get('reindex_scope', 'source_and_value'))}, reindex_start_id={int(params.get('reindex_start_id', 1) or 1)}, first_input_wins={bool(params.get('first_input_wins', True))}, target_voxel_size_mode={_py(params.get('target_voxel_size_mode', 'smallest_input'))}, resample_to_target_grid={bool(params.get('resample_to_target_grid', True))}, voxel_size={_py(params.get('voxel_size'))}, voxel_size_y={_py(params.get('voxel_size_y'))}, voxel_size_z={_py(params.get('voxel_size_z'))}, max_merged_voxels={int(params.get('max_merged_voxels', 2000000) or 2000000)})",
             f"{out('voxel_grid')} = {out('voxel_model')}",
             f"{out('file')} = save_mesh({out('voxel_model')}, OUTPUT_DIR / {_py(file_name)})",
             f"{out('report')} = {{'n_cells': int({out('voxel_model')}.n_cells), 'input_count': {len(models)}}}",
@@ -848,7 +848,7 @@ def _node_code(
             source = f"load_input_file({selected}).get('mesh')"
         prefix = str(params.get("output_prefix") or "voxel")
         lines += [
-            f"_boundaries_{index}, _boundary_files_{index} = extract_voxel_boundaries({source}, OUTPUT_DIR, output_prefix={_py(prefix)}, cell_data_name={_py(params.get('cell_data_name', 'MaterialIDs'))}, triangulate_shells={bool(params.get('triangulate_shells', True))})",
+            f"_boundaries_{index}, _boundary_files_{index} = extract_voxel_boundaries({source}, OUTPUT_DIR, output_prefix={_py(prefix)}, cell_data_name={_py(params.get('cell_data_name', 'MaterialIDs'))}, triangulate_shells={bool(params.get('triangulate_shells', True))}, decimals={int(params.get('decimals', 8) or 8)}, add_top_risers={bool(params.get('add_top_risers', True))})",
             f"{out('report')} = {{name: {{'cells': int(mesh.n_cells), 'point_data': list(mesh.point_data.keys()), 'cell_data': list(mesh.cell_data.keys())}} for name, mesh in _boundaries_{index}.items()}}",
             f"display({out('report')})",
         ]
@@ -868,7 +868,7 @@ def _node_code(
             source = f"load_input_file({selected}).get('mesh')"
         file_name = str(params.get("file_name") or "repaired_reordered_voxel_model.vtu")
         lines += [
-            f"{out('mesh')} = repair_reorder_voxel_mesh({source}, material_array={_py(params.get('material_array', 'MaterialIDs'))}, bottom_z={float(params.get('bottom_z', -200.0) or -200.0)}, remove_stale_mapping_arrays={bool(params.get('remove_stale_mapping_arrays', True))}, add_node_material_ids={bool(params.get('add_node_material_ids', True))}, keep_original_order_ids={bool(params.get('keep_original_order_ids', False))}, reindex_material_ids_from_zero={bool(params.get('reindex_material_ids_from_zero', True))})",
+            f"{out('mesh')} = repair_reorder_voxel_mesh({source}, **{_py({k: v for k, v in params.items() if k not in {'mesh_file_id', 'file_name', 'preview_scalar', 'show_edges'}})})",
             f"{out('voxel_model')} = {out('mesh')}",
             f"{out('file')} = save_mesh({out('mesh')}, OUTPUT_DIR / {_py(file_name)})",
             f"{out('report')} = {{'n_cells': int({out('mesh')}.n_cells), 'n_points': int({out('mesh')}.n_points), 'materials': np.unique(np.asarray({out('mesh')}.cell_data[{_py(params.get('material_array', 'MaterialIDs'))}])).tolist()}}",
@@ -986,6 +986,8 @@ def build_notebook(project: Dict[str, Any], input_manifest: List[Dict[str, Any]]
     ))
 
     helper_source = HELPER_SOURCE_PATH.read_text(encoding="utf-8")
+    geometry_source = (APP_ROOT / "notebook_geometry_helpers.py").read_text(encoding="utf-8")
+    helper_source += "\nNOTEBOOK_GEOMETRY_SOURCE = " + repr(geometry_source) + "\n"
     cells.append(_markdown_cell(
         "## Standalone helper functions\n\n"
         "The following cell contains normal reusable Python functions. It does not import `NODE_REGISTRY`, `RuntimeValue`, "

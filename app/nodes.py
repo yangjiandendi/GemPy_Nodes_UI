@@ -5132,6 +5132,11 @@ def _build_normal_thickened_mesh(
     ])
     poly.cell_data["thickening_part"] = part
     poly.cell_data["buffer_distance"] = np.full(poly.n_cells, float(d), dtype=float)
+    # Preserve the centre sheet and physical half-width through VTK save/load.
+    # Distance voxelization must fill this band, not trace the two shell skins.
+    poly.field_data["thickening_reference_points"] = (inner_pts + outer_pts) * 0.5
+    poly.field_data["thickening_reference_faces"] = np.asarray(surf_n.faces, dtype=np.int64)
+    poly.field_data["thickening_half_width"] = np.asarray([abs(d) * 0.5])
 
     if clean_output:
         try:
@@ -6818,12 +6823,12 @@ def _make_voxel_unstructured_grid(
     return grid
 
 
-def _structured_voxel_centers_from_bounds(
+def _structured_voxel_axes_from_bounds(
     bounds: Sequence[float],
     spacing: tuple[float, float, float],
     padding: float = 0.0,
     max_voxels: int = 2000000,
-) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray], List[float]]:
+) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], List[float]]:
     b = [float(v) for v in bounds]
     pad = float(padding or 0.0)
     xmin, xmax = b[0] - pad, b[1] + pad
@@ -6847,9 +6852,25 @@ def _structured_voxel_centers_from_bounds(
     xs = xmin + (np.arange(nx, dtype=float) + 0.5) * dx
     ys = ymin + (np.arange(ny, dtype=float) + 0.5) * dy
     zs = zmin + (np.arange(nz, dtype=float) + 0.5) * dz
+    out_bounds = [xmin, xmin + nx * dx, ymin, ymin + ny * dy, zmin, zmin + nz * dz]
+    return (xs, ys, zs), out_bounds
+
+
+def _structured_voxel_centers_from_bounds(
+    bounds: Sequence[float],
+    spacing: tuple[float, float, float],
+    padding: float = 0.0,
+    max_voxels: int = 2000000,
+) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray], List[float]]:
+    axis_values, out_bounds = _structured_voxel_axes_from_bounds(
+        bounds,
+        spacing,
+        padding=padding,
+        max_voxels=max_voxels,
+    )
+    xs, ys, zs = axis_values
     X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
     centers = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])
-    out_bounds = [xmin, xmin + nx * dx, ymin, ymin + ny * dy, zmin, zmin + nz * dz]
     return centers, (xs, ys, zs), out_bounds
 
 
@@ -6918,6 +6939,14 @@ class MeshToVoxelModelNode(BaseNode):
         )
         voxel_spacing = (spacing[0], spacing[1], spacing[2])
         spacing_source = spacing[3]
+        reference_surface = None
+        if voxelization_mode in {"distance_to_surface", "surface_distance", "distance"} and "thickening_reference_points" in mesh.field_data:
+            reference_surface = pv.PolyData(
+                np.asarray(mesh.field_data["thickening_reference_points"]),
+                np.asarray(mesh.field_data["thickening_reference_faces"], dtype=np.int64),
+            )
+            if distance_buffer is None:
+                distance_buffer = float(mesh.field_data["thickening_half_width"][0])
         if distance_buffer is None:
             # For distance-to-surface voxelization, one voxel-ish thickness is a
             # useful automatic default. Users can set this explicitly for fault
@@ -6925,20 +6954,12 @@ class MeshToVoxelModelNode(BaseNode):
             distance_buffer = 0.75 * float(min(voxel_spacing))
         effective_padding = max(float(padding), float(distance_buffer or 0.0)) if voxelization_mode in {"distance_to_surface", "surface_distance", "distance"} else float(padding)
 
-        surface = mesh.extract_surface()
+        surface = reference_surface if reference_surface is not None else mesh.extract_surface()
         try:
             surface = surface.triangulate()
         except Exception:
             pass
 
-        centers, axis_values, voxel_bounds = _structured_voxel_centers_from_bounds(
-            surface.bounds,
-            voxel_spacing,
-            padding=effective_padding,
-            max_voxels=int(max_voxels),
-        )
-
-        pts = pv.PolyData(centers)
         voxelization_report = {"mode": voxelization_mode}
 
         if voxelization_mode in {"distance_to_surface", "surface_distance", "distance"}:
@@ -6946,18 +6967,58 @@ class MeshToVoxelModelNode(BaseNode):
             # not use inside/outside ray casting, so it avoids the fixed-direction
             # "fringe" artifacts that select_enclosed_points can create for
             # open/non-manifold fault meshes.
+            axis_values, voxel_bounds = _structured_voxel_axes_from_bounds(
+                surface.bounds,
+                voxel_spacing,
+                padding=effective_padding,
+                max_voxels=int(max_voxels),
+            )
+            xs, ys, zs = axis_values
+            nx, ny, nz = len(xs), len(ys), len(zs)
+            candidate_count = int(nx * ny * nz)
+            chunk_size = max(int(distance_chunk_size), 1)
+            selected_chunks: List[np.ndarray] = []
+            distance_min = np.inf
+            distance_max = -np.inf
+            yz_stride = int(ny * nz)
             try:
-                # compute_implicit_distance is vectorized in VTK. For open
-                # surfaces the sign may be meaningless, but abs(distance) is the
-                # distance to the surface.
-                dist_poly = pts.compute_implicit_distance(surface, inplace=False)
-                distances = np.abs(np.asarray(dist_poly.point_data["implicit_distance"], dtype=float))
-                mask = distances <= float(distance_buffer)
+                # Use exact unsigned closest-point distances in bounded chunks.
+                # Repeated ``compute_implicit_distance`` calls rebuild a VTK
+                # implicit-distance pipeline and can terminate the process for
+                # large/open or non-manifold sheets.  ``find_closest_cell``
+                # reuses the surface locator and avoids that native crash.
+                for start in range(0, candidate_count, chunk_size):
+                    stop = min(start + chunk_size, candidate_count)
+                    flat = np.arange(start, stop, dtype=np.int64)
+                    ix = flat // yz_stride
+                    remainder = flat % yz_stride
+                    iy = remainder // nz
+                    iz = remainder % nz
+                    chunk_centers = np.column_stack((xs[ix], ys[iy], zs[iz]))
+                    _closest_cells, closest_points = surface.find_closest_cell(
+                        chunk_centers,
+                        return_closest_point=True,
+                    )
+                    distances = np.linalg.norm(
+                        chunk_centers - np.asarray(closest_points, dtype=float),
+                        axis=1,
+                    )
+                    if distances.size:
+                        distance_min = min(distance_min, float(np.nanmin(distances)))
+                        distance_max = max(distance_max, float(np.nanmax(distances)))
+                    chunk_mask = distances <= float(distance_buffer)
+                    if np.any(chunk_mask):
+                        selected_chunks.append(chunk_centers[chunk_mask].copy())
+                selected_centers = (
+                    np.concatenate(selected_chunks, axis=0)
+                    if selected_chunks else np.empty((0, 3), dtype=float)
+                )
                 voxelization_report.update({
                     "distance_buffer": float(distance_buffer),
-                    "distance_min": float(np.nanmin(distances)) if distances.size else None,
-                    "distance_max": float(np.nanmax(distances)) if distances.size else None,
-                    "classification": "abs(implicit_distance) <= distance_buffer",
+                    "distance_chunk_size": int(chunk_size),
+                    "distance_min": float(distance_min) if np.isfinite(distance_min) else None,
+                    "distance_max": float(distance_max) if np.isfinite(distance_max) else None,
+                    "classification": "unsigned_closest_surface_distance <= distance_buffer",
                 })
             except Exception as exc:
                 raise NodeExecutionError(
@@ -6965,11 +7026,44 @@ class MeshToVoxelModelNode(BaseNode):
                     "Try triangulating/cleaning the mesh, increasing Distance buffer, or use inside_surface mode for closed volumes."
                 ) from exc
         else:
+            axis_values, voxel_bounds = _structured_voxel_axes_from_bounds(
+                surface.bounds,
+                voxel_spacing,
+                padding=effective_padding,
+                max_voxels=int(max_voxels),
+            )
+            xs, ys, zs = axis_values
+            nx, ny, nz = len(xs), len(ys), len(zs)
+            candidate_count = int(nx * ny * nz)
+            chunk_size = max(int(distance_chunk_size), 1)
+            yz_stride = int(ny * nz)
+            selected_chunks: List[np.ndarray] = []
             try:
-                selected = pts.select_enclosed_points(surface, tolerance=float(tolerance), check_surface=bool(check_surface))
-                mask = np.asarray(selected.point_data["SelectedPoints"]).astype(bool)
+                for start in range(0, candidate_count, chunk_size):
+                    stop = min(start + chunk_size, candidate_count)
+                    flat = np.arange(start, stop, dtype=np.int64)
+                    ix = flat // yz_stride
+                    remainder = flat % yz_stride
+                    iy = remainder // nz
+                    iz = remainder % nz
+                    chunk_centers = np.column_stack((xs[ix], ys[iy], zs[iz]))
+                    selected = pv.PolyData(chunk_centers).select_enclosed_points(
+                        surface,
+                        tolerance=float(tolerance),
+                        check_surface=bool(check_surface),
+                    )
+                    chunk_mask = np.asarray(selected.point_data["SelectedPoints"]).astype(bool)
+                    if invert:
+                        chunk_mask = ~chunk_mask
+                    if np.any(chunk_mask):
+                        selected_chunks.append(chunk_centers[chunk_mask].copy())
+                selected_centers = (
+                    np.concatenate(selected_chunks, axis=0)
+                    if selected_chunks else np.empty((0, 3), dtype=float)
+                )
                 voxelization_report.update({
                     "classification": "select_enclosed_points",
+                    "classification_chunk_size": int(chunk_size),
                     "inside_tolerance": float(tolerance),
                     "check_surface": bool(check_surface),
                 })
@@ -6978,11 +7072,6 @@ class MeshToVoxelModelNode(BaseNode):
                     f"Could not classify voxel centers inside the mesh surface: {exc}. "
                     "For open fault/sheet surfaces, use Voxelization mode = distance_to_surface."
                 ) from exc
-
-            if invert:
-                mask = ~mask
-
-        selected_centers = centers[mask]
         if selected_centers.shape[0] == 0:
             raise NodeExecutionError(
                 "No voxel centers were selected. For fault surfaces, use Voxelization mode = distance_to_surface and increase Distance buffer. "
@@ -7045,10 +7134,14 @@ class MeshToVoxelModelNode(BaseNode):
             "voxel_size_source": spacing_source,
             "voxelization_mode": voxelization_mode,
             "distance_buffer": float(distance_buffer) if distance_buffer is not None else None,
+            "distance_reference": "thicken_centre_surface" if reference_surface is not None else "input_surface",
+            "thicken_input_thickness": float(mesh.field_data["thickening_half_width"][0]) * 2.0 if reference_surface is not None else None,
+            "nominal_distance_band_thickness": float(distance_buffer) * 2.0 if voxelization_mode in {"distance_to_surface", "surface_distance", "distance"} else None,
+            "thickness_note": "Thicken defines the physical input thickness. An empty distance radius preserves it; a nonempty radius overrides its half-width, rather than adding to the two shell skins. Cell boundaries still have voxel discretization error." if reference_surface is not None else "",
             "padding_requested": float(padding),
             "padding_effective": float(effective_padding),
             "voxelization_report": voxelization_report,
-            "candidate_voxels": int(centers.shape[0]),
+            "candidate_voxels": int(candidate_count),
             "selected_voxels": int(voxel_grid.n_cells),
             "voxel_bounds": [float(v) for v in voxel_bounds],
             "mesh_bounds": [float(v) for v in surface.bounds],
@@ -8678,11 +8771,14 @@ class ExtractVoxelBoundariesNode(BaseNode):
                     z_low = z0 + (k_low + 1) * dz
                     z_high = z0 + (k_high + 1) * dz
                     if z_high > z_low:
-                        top_quads.append(np.array([[x, ymin, z_low], [x, ymax, z_low], [x, ymax, z_high], [x, ymin, z_high]]))
-                        if k1 > k2:
-                            top_source_cells.append(int(cell_ids[i, j, k1]))
-                        else:
-                            top_source_cells.append(int(cell_ids[i + 1, j, k2]))
+                        for k in range(k_low + 1, k_high + 1):
+                            owner = int(cell_ids[i if k1 > k2 else i + 1, j, k])
+                            if owner < 0:
+                                continue
+                            lo, hi = z0 + k * dz, z0 + (k + 1) * dz
+                            quad = np.array([[x, ymin, lo], [x, ymax, lo], [x, ymax, hi], [x, ymin, hi]])
+                            top_quads.append(quad if k1 > k2 else quad[::-1])
+                            top_source_cells.append(owner)
 
             for i in range(nx):
                 for j in range(ny - 1):
@@ -8698,11 +8794,14 @@ class ExtractVoxelBoundariesNode(BaseNode):
                     z_low = z0 + (k_low + 1) * dz
                     z_high = z0 + (k_high + 1) * dz
                     if z_high > z_low:
-                        top_quads.append(np.array([[xmin, y, z_low], [xmax, y, z_low], [xmax, y, z_high], [xmin, y, z_high]]))
-                        if k1 > k2:
-                            top_source_cells.append(int(cell_ids[i, j, k1]))
-                        else:
-                            top_source_cells.append(int(cell_ids[i, j + 1, k2]))
+                        for k in range(k_low + 1, k_high + 1):
+                            owner = int(cell_ids[i, j if k1 > k2 else j + 1, k])
+                            if owner < 0:
+                                continue
+                            lo, hi = z0 + k * dz, z0 + (k + 1) * dz
+                            quad = np.array([[xmin, y, lo], [xmax, y, lo], [xmax, y, hi], [xmin, y, hi]])
+                            top_quads.append(quad[::-1] if k1 > k2 else quad)
+                            top_source_cells.append(owner)
 
         top_arrays = cls.boundary_arrays_from_source_cells(mesh, top_source_cells, preferred_first=cell_data_name)
         bot_arrays = cls.boundary_arrays_from_source_cells(mesh, bot_source_cells, preferred_first=cell_data_name)
