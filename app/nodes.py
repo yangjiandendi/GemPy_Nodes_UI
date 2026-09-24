@@ -237,7 +237,9 @@ def _infer_file_type_from_name(name: str, file_type: str = "auto") -> str:
         return "npy"
     if suffix == ".json":
         return "json"
-    raise NodeExecutionError(f"Cannot infer file type from {name}. Choose csv/xlsx, json, mesh, raster/tif, or npy.")
+    if suffix == ".gempy":
+        return "gempy"
+    raise NodeExecutionError(f"Cannot infer file type from {name}. Choose csv/xlsx, json, gempy, mesh, raster/tif, or npy.")
 
 
 def _read_table_from_path(path: Path, file_type: str = "auto", sheet_name: Optional[str] = None) -> pd.DataFrame:
@@ -1016,7 +1018,7 @@ def _file_preview(path: Path, file_id: Optional[str] = None, *, rows: int = 15, 
                     "file_name": path.name,
                     "top_level_type": "object",
                     "top_level_keys": keys,
-                    "jsonio_hint": "If this is a GemPy JsonIO model, connect Load Uploaded File.file to Load GemPy Model JSON, or select this file directly in Load GemPy Model JSON.",
+                    "jsonio_hint": "If this is a legacy GemPy JsonIO model, connect Load Uploaded File.file to Load GemPy Model, or select it directly there.",
                 }
             elif isinstance(data, list):
                 prev = {
@@ -1024,7 +1026,7 @@ def _file_preview(path: Path, file_id: Optional[str] = None, *, rows: int = 15, 
                     "file_name": path.name,
                     "top_level_type": "array",
                     "length": len(data),
-                    "jsonio_hint": "If this is a GemPy JsonIO model, connect Load Uploaded File.file to Load GemPy Model JSON, or select this file directly in Load GemPy Model JSON.",
+                    "jsonio_hint": "If this is a legacy GemPy JsonIO model, connect Load Uploaded File.file to Load GemPy Model, or select it directly there.",
                 }
             else:
                 prev = {"preview_type": "json_file", "file_name": path.name, "top_level_type": type(data).__name__}
@@ -1122,15 +1124,7 @@ def _infer_geo_model_resolution(geo_model: Any) -> Optional[List[int]]:
 
 
 def _geo_model_resolution_report(geo_model: Any) -> Dict[str, Any]:
-    """Report whether the GeoModel was created/loaded with explicit resolution.
-
-    JsonIO can only reliably save a model for direct compute_model use when a
-    regular-grid resolution is explicitly set. Refinement-only models may have a
-    grid after initialization, but GemPy's JsonIO does not preserve enough
-    information in all cases. Therefore CreateGemPyModel records whether the
-    user provided a resolution, and LoadGemPyModelJson marks loaded JsonIO models
-    as resolution-backed when a regular grid resolution can be found.
-    """
+    """Report regular-grid resolution provenance for model previews."""
     explicit = bool(getattr(geo_model, "_node_editor_resolution_was_explicit", False))
     explicit_resolution = getattr(geo_model, "_node_editor_resolution", None)
     inferred_resolution = _infer_geo_model_resolution(geo_model)
@@ -1143,12 +1137,12 @@ def _geo_model_resolution_report(geo_model: Any) -> Dict[str, Any]:
         "explicit_resolution_value": explicit_resolution,
         "inferred_regular_grid_resolution": inferred_resolution,
         "json_io_save_safe": bool(explicit and (explicit_resolution or inferred_resolution)),
-        "note": "GemPy JsonIO save is safest when Create GemPy Model used the Resolution field, not only Refinement.",
+        "note": "Resolution provenance is diagnostic; .gempy save uses GemPy's native serializer.",
     }
 
 
-def _geo_model_basic_preview(geo_model: Any, name: str = "geo_model") -> Dict[str, Any]:
-    """Compact preview for GeoModel objects loaded from JsonIO."""
+def _geo_model_basic_preview(geo_model: Any, name: str = "geo_model", source: str = "GemPy model") -> Dict[str, Any]:
+    """Compact preview for a deserialized GeoModel."""
     project_name = str(getattr(geo_model, "project_name", "") or getattr(geo_model, "name", "") or name)
     elements = _extract_element_names_from_geo_model(geo_model) if "_extract_element_names_from_geo_model" in globals() else []
     groups = _structural_group_summary(geo_model) if "_structural_group_summary" in globals() else []
@@ -1158,12 +1152,12 @@ def _geo_model_basic_preview(geo_model: Any, name: str = "geo_model") -> Dict[st
         extent = []
     preview = {
         "project_name": project_name,
-        "source": "GemPy JsonIO",
+        "source": source,
         "extent": extent,
         "resolution_report": _geo_model_resolution_report(geo_model),
         "available_elements_from_geo_model": elements,
         "structural_groups": groups,
-        "message": "GeoModel loaded with GemPy JsonIO. You can connect this directly to Compute GemPy Model.",
+        "message": "GeoModel loaded. Its computed solution is not stored; connect it to Compute GemPy Model to recompute.",
     }
     return preview
 
@@ -1286,6 +1280,9 @@ class LoadKadiFileNode(BaseNode):
                 "mesh": RuntimeValue("mesh", mesh, name=file_name, preview=preview, metadata={"file_id": stored_record["file_id"], "kadi_record_id": int(record_id), "kadi_file_name": file_name}),
                 "file": RuntimeValue("file", stored_path, name=file_name, preview={"file_id": stored_record["file_id"], "download_url": f"/api/download/{stored_record['file_id']}", **preview}, metadata={"file_id": stored_record["file_id"]}),
             }
+        if file_type in {"gempy", "json"}:
+            preview = {"file_id": stored_record["file_id"], "download_url": f"/api/download/{stored_record['file_id']}", "file_type": file_type}
+            return {"file": RuntimeValue("file", stored_path, name=file_name, preview=preview, metadata=preview)}
         raise NodeExecutionError(f"Unsupported Kadi file type: {file_type}")
 
 
@@ -2411,9 +2408,7 @@ class CreateGemPyModelNode(BaseNode):
         else:
             kwargs["refinement"] = refinement
         geo_model = gp.create_geomodel(**kwargs)
-        # Track whether the model was created with an explicit regular-grid
-        # resolution. This matters for GemPy JsonIO export: refinement-only
-        # models are not reliable enough for direct JsonIO save/load workflows.
+        # Keep resolution provenance for previews and legacy JsonIO imports.
         try:
             geo_model._node_editor_resolution_was_explicit = bool(resolution)
             geo_model._node_editor_resolution = [int(v) for v in resolution] if resolution else None
@@ -9040,12 +9035,6 @@ class LoadGemPyModelJsonNode(BaseNode):
     type_name = "LoadGemPyModelJson"
 
     def run(self, inputs: Dict[str, Any], params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, RuntimeValue]:
-        try:
-            from gempy.modules.json_io.json_operations import JsonIO
-            _patch_gempy_stringarray_compat()
-        except Exception as exc:
-            raise NodeExecutionError("GemPy JsonIO is not installed/importable. Install a GemPy version with gempy.modules.json_io.json_operations.JsonIO.") from exc
-
         connected = inputs.get("file")
         path: Optional[Path] = None
         file_id = str(params.get("file_id") or "").strip()
@@ -9054,43 +9043,47 @@ class LoadGemPyModelJsonNode(BaseNode):
         if connected is not None:
             rv = connected[0] if isinstance(connected, list) else connected
             if rv.kind != "file":
-                raise NodeExecutionError(f"Load GemPy Model JSON expects a file input, got {rv.kind}")
+                raise NodeExecutionError(f"Load GemPy Model expects a file input, got {rv.kind}")
             path = Path(rv.value)
             connected_file_id = str((rv.metadata or {}).get("file_id") or "")
         elif file_id:
             path = get_file_path(file_id)
         else:
-            raise NodeExecutionError("Provide a connected JSON file or select an uploaded .json file.")
+            raise NodeExecutionError("Provide a connected .gempy or legacy .json file, or select an uploaded file.")
 
         if not path.exists():
-            raise NodeExecutionError(f"GemPy JSON file does not exist: {path}")
-        if path.suffix.lower() != ".json":
-            raise NodeExecutionError(f"Expected a .json GemPy model file, got: {path.name}")
+            raise NodeExecutionError(f"GemPy model file does not exist: {path}")
+        suffix = path.suffix.lower()
+        if suffix not in {".gempy", ".json"}:
+            raise NodeExecutionError(f"Expected a .gempy or legacy .json GemPy model file, got: {path.name}")
 
         try:
-            geo_model = JsonIO.load_model_from_json(str(path))
+            if suffix == ".gempy":
+                import gempy as gp
+                geo_model = gp.load_model(str(path))
+            else:
+                from gempy.modules.json_io.json_operations import JsonIO
+                _patch_gempy_stringarray_compat()
+                geo_model = JsonIO.load_model_from_json(str(path))
         except Exception as exc:
-            raise NodeExecutionError(f"GemPy JsonIO failed to load {path.name}: {exc}") from exc
+            raise NodeExecutionError(f"GemPy failed to load {path.name}: {exc}") from exc
 
-        # A JsonIO-loaded model should contain regular grid resolution if it is
-        # suitable for direct compute_model. Mark it as JsonIO/resolution-backed
-        # when a resolution can be inferred.
         inferred_resolution = _infer_geo_model_resolution(geo_model)
         try:
-            geo_model._node_editor_loaded_from_json = True
+            geo_model._node_editor_loaded_from_json = suffix == ".json"
             geo_model._node_editor_resolution_was_explicit = inferred_resolution is not None
             geo_model._node_editor_resolution = inferred_resolution
         except Exception:
             pass
 
-        preview = _geo_model_basic_preview(geo_model, name=path.stem)
+        preview = _geo_model_basic_preview(geo_model, name=path.stem, source="GemPy .gempy" if suffix == ".gempy" else "GemPy JsonIO")
         preview.update({
             "file_name": path.name,
             "loaded_from_file_id": file_id or connected_file_id,
-            "can_compute_directly": inferred_resolution is not None,
+            "regular_grid_resolution_inferred": inferred_resolution is not None,
         })
-        if inferred_resolution is None:
-            preview["warning"] = "No regular-grid resolution could be inferred from this JSON model. gp.compute_model may fail."
+        if inferred_resolution is None and suffix == ".json":
+            preview["warning"] = "No regular-grid resolution could be inferred from this legacy JSON model. gp.compute_model may fail."
 
         return {"geo_model": RuntimeValue("geo_model", geo_model, name=path.stem, preview=preview, metadata=preview)}
 
@@ -9099,48 +9092,33 @@ class SaveGemPyModelJsonNode(BaseNode):
     type_name = "SaveGemPyModelJson"
 
     def run(self, inputs: Dict[str, Any], params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, RuntimeValue]:
-        try:
-            from gempy.modules.json_io.json_operations import JsonIO
-        except Exception as exc:
-            raise NodeExecutionError("GemPy JsonIO is not installed/importable. Install a GemPy version with gempy.modules.json_io.json_operations.JsonIO.") from exc
-
         rv = _single(inputs, "geo_model")
         if rv.kind != "geo_model":
-            raise NodeExecutionError(f"Save GemPy Model JSON expects geo_model input, got {rv.kind}")
+            raise NodeExecutionError(f"Save GemPy Model expects geo_model input, got {rv.kind}")
         geo_model = rv.value
 
-        file_name = str(params.get("file_name") or "").strip() or "gempy_model.json"
-        if not file_name.lower().endswith(".json"):
-            file_name += ".json"
-
-        require_explicit_resolution = _as_bool(params.get("require_explicit_resolution"), True)
-        resolution_report = _geo_model_resolution_report(geo_model)
-        if require_explicit_resolution and not resolution_report.get("json_io_save_safe"):
-            raise NodeExecutionError(
-                "GemPy JsonIO export requires a model with explicit Resolution. "
-                "In Create GemPy Model, fill the Resolution field, for example [50, 50, 50]. "
-                "Using only Refinement is not reliable for JsonIO save/load. "
-                f"Resolution report: {resolution_report}"
-            )
-
-        path = make_runtime_path(Path(file_name).stem, ".json")
+        requested_name = Path(str(params.get("file_name") or "").strip() or "gempy_model.gempy").name
+        file_name = f"{Path(requested_name).stem}.gempy" if Path(requested_name).suffix else f"{requested_name}.gempy"
+        path = make_runtime_path(Path(file_name).stem, ".gempy")
         try:
-            JsonIO.save_model_to_json(geo_model, str(path))
+            import gempy as gp
+            saved_path = Path(gp.save_model(geo_model, path=str(path)))
         except Exception as exc:
-            raise NodeExecutionError(f"GemPy JsonIO failed to save model to JSON: {exc}") from exc
+            raise NodeExecutionError(f"GemPy failed to save model to .gempy: {exc}") from exc
+        if not saved_path.exists():
+            raise NodeExecutionError(f"GemPy reported a saved model, but the file does not exist: {saved_path}")
 
-        record = register_output_file(path, display_name=file_name)
+        record = register_output_file(saved_path, display_name=file_name)
         preview = {
             "file_id": record["file_id"],
             "download_url": f"/api/download/{record['file_id']}",
             "file_name": file_name,
-            "format": "GemPy JsonIO model JSON",
-            "resolution_report": resolution_report,
-            "message": "GemPy model saved with JsonIO.save_model_to_json. The JSON can be loaded with Load GemPy Model JSON and connected directly to Compute GemPy Model.",
+            "format": "GemPy model (.gempy)",
+            "message": "Model definition saved with gp.save_model. Computed solutions are not included; load and recompute the model when needed.",
         }
         return {
             "file": RuntimeValue("file", Path(record["path"]), name=file_name, preview=preview, metadata=preview),
-            "report": RuntimeValue("report", preview, name="gempy_json_save_report", preview=preview, metadata=preview),
+            "report": RuntimeValue("report", preview, name="gempy_save_report", preview=preview, metadata=preview),
         }
 
 

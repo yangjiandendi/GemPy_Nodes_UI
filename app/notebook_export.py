@@ -274,8 +274,8 @@ def _node_code(
     elif node_type == "LoadGemPyModelJson":
         path_expr = _one(inputs, "file", _file_expr(params, manifest_by_id))
         lines += [
-            f"{out('file', 'gempy_model_json_path')} = Path({path_expr})",
-            f"{out('geo_model')} = load_gempy_model_json({out('file', 'gempy_model_json_path')})",
+            f"{out('file', 'gempy_model_path')} = Path({path_expr})",
+            f"{out('geo_model')} = load_gempy_model({out('file', 'gempy_model_path')})",
             f"display(structural_group_summary({out('geo_model')}))",
         ]
 
@@ -899,8 +899,8 @@ def _node_code(
 
     elif node_type == "SaveGemPyModelJson":
         source = _one(inputs, "geo_model")
-        file_name = str(params.get("file_name") or "gempy_model.json")
-        lines += [f"{out('file')} = save_gempy_model_json({source}, OUTPUT_DIR / {_py(file_name)})", f"print('Saved:', {out('file')})"]
+        file_name = str(params.get("file_name") or "gempy_model.gempy")
+        lines += [f"{out('file')} = save_gempy_model({source}, OUTPUT_DIR / {_py(file_name)})", f"print('Saved:', {out('file')})"]
 
     elif node_type == "UploadGeoDTStructureVersionToKadi":
         role_names = ["volume", "south", "north", "bottom", "top", "west", "east", "side_mesh", "full_shell"]

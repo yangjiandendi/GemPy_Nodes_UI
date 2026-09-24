@@ -334,7 +334,7 @@ async def upload(file: UploadFile = File(...), category: str = Form("Uncategoriz
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
     suffix = Path(file.filename).suffix.lower()
-    if suffix not in {".csv", ".xlsx", ".xls", ".json", ".tif", ".tiff", ".vtk", ".vtp", ".vti", ".vtu", ".stl", ".ply", ".obj", ".npy"}:
+    if suffix not in {".csv", ".xlsx", ".xls", ".json", ".gempy", ".tif", ".tiff", ".vtk", ".vtp", ".vti", ".vtu", ".stl", ".ply", ".obj", ".npy"}:
         raise HTTPException(status_code=400, detail=f"Unsupported file suffix: {suffix}")
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         content = await file.read()

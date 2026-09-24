@@ -159,26 +159,26 @@ NODE_TYPES = [
         ],
         "params": [
             p("file_id", "Uploaded file", "file_select", ""),
-            p("file_type", "File type", "select", "auto", ["auto", "csv", "xlsx", "json", "mesh", "vtk", "vtp", "vtu", "vti", "stl", "ply", "obj", "raster", "tif", "tiff", "npy"]),
+            p("file_type", "File type", "select", "auto", ["auto", "csv", "xlsx", "json", "gempy", "mesh", "vtk", "vtp", "vtu", "vti", "stl", "ply", "obj", "raster", "tif", "tiff", "npy"]),
             p("sheet_name", "Excel sheet name", "text", ""),
         ],
     },
     {
         "type": "LoadGemPyModelJson",
-        "title": "Load GemPy Model JSON",
+        "title": "Load GemPy Model",
         "category": "Input",
-        "description": "Load a complete GemPy GeoModel using GemPy JsonIO. This skips table import, structural-frame setup and interpolation-option setup.",
-        "inputs": [port("file", "GemPy model JSON, optional", "file")],
+        "description": "Load a GemPy .gempy model definition with gp.load_model; legacy JsonIO .json files remain readable. Recompute solutions after loading.",
+        "inputs": [port("file", "GemPy model .gempy or legacy .json, optional", "file")],
         "outputs": [port("geo_model", "geo model", "geo_model")],
         "params": [
-            p("file_id", "Uploaded GemPy JSON file", "file_select", "", help_text="Optional if a file is connected. Use a JsonIO model JSON saved by Save GemPy Model JSON."),
+            p("file_id", "Uploaded GemPy model file", "file_select", "", help_text="Optional if a file is connected. Use a .gempy file saved by Save GemPy Model, or a legacy JsonIO .json file."),
         ],
     },
     {
         "type": "LoadKadiFile",
         "title": "Load from Kadi",
         "category": "Input",
-        "description": "Download one CSV/XLSX table or PyVista-readable mesh file from a Kadi record.",
+        "description": "Download a CSV/XLSX table, a PyVista-readable mesh, or a GemPy model file from a Kadi record.",
         "inputs": [],
         "outputs": [
             port("table", "table", "table"),
@@ -188,7 +188,7 @@ NODE_TYPES = [
         "params": [
             p("record_id", "Kadi record id", "number", "49744"),
             p("file_name", "File name", "text", "local_geology.csv"),
-            p("file_type", "File type", "select", "auto", ["auto", "csv", "xlsx", "json", "mesh", "vtk", "vtp", "vtu", "vti", "stl", "ply", "obj"]),
+            p("file_type", "File type", "select", "auto", ["auto", "csv", "xlsx", "json", "gempy", "mesh", "vtk", "vtp", "vtu", "vti", "stl", "ply", "obj"]),
             p("sheet_name", "Excel sheet name", "text", "", help_text="Optional; only used when loading Excel files."),
         ],
     },
@@ -881,14 +881,13 @@ NODE_TYPES = [
     },
     {
         "type": "SaveGemPyModelJson",
-        "title": "Save GemPy Model JSON",
+        "title": "Save GemPy Model",
         "category": "Output",
-        "description": "Save a complete GemPy GeoModel using GemPy JsonIO.save_model_to_json.",
+        "description": "Save the GemPy model definition as a .gempy file using gp.save_model. Computed solutions are not included.",
         "inputs": [port("geo_model", "geo model", "geo_model")],
-        "outputs": [port("file", "GemPy model JSON", "file"), port("report", "save report", "report")],
+        "outputs": [port("file", "GemPy model .gempy", "file"), port("report", "save report", "report")],
         "params": [
-            p("file_name", "File name", "text", "gempy_model.json"),
-            p("require_explicit_resolution", "Require explicit resolution", "boolean", True, help_text="Recommended. JsonIO save/load requires a model created with Resolution, not only Refinement."),
+            p("file_name", "File name", "text", "gempy_model.gempy"),
         ],
     },
     {

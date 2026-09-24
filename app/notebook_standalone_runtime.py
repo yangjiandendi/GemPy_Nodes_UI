@@ -69,7 +69,7 @@ def infer_file_type(path: Path, requested: str = "auto") -> str:
         ".vtk": "mesh", ".vtp": "mesh", ".vtu": "mesh",
         ".vti": "mesh", ".stl": "mesh", ".ply": "mesh",
         ".obj": "mesh", ".npy": "npy", ".npz": "npz",
-        ".json": "json", ".txt": "text",
+        ".json": "json", ".gempy": "gempy", ".txt": "text",
     }
     return mapping.get(suffix, "file")
 
@@ -1855,17 +1855,23 @@ def save_array(array: np.ndarray, path: Path, fmt: str = "npy") -> Path:
     return path
 
 
-def load_gempy_model_json(path: Path):
-    from gempy.modules.json_io.json_operations import JsonIO
-    return JsonIO.load_model_from_json(str(path))
-
-
-def save_gempy_model_json(geo_model: Any, path: Path) -> Path:
-    from gempy.modules.json_io.json_operations import JsonIO
+def load_gempy_model(path: Path):
     path = Path(path)
+    if path.suffix.lower() == ".gempy":
+        import gempy as gp
+        return gp.load_model(str(path))
+    if path.suffix.lower() == ".json":
+        from gempy.modules.json_io.json_operations import JsonIO
+        return JsonIO.load_model_from_json(str(path))
+    raise ValueError(f"Expected a .gempy or legacy .json GemPy model file: {path}")
+
+
+def save_gempy_model(geo_model: Any, path: Path) -> Path:
+    import gempy as gp
+    path = Path(path)
+    path = path.with_suffix(".gempy")
     path.parent.mkdir(parents=True, exist_ok=True)
-    JsonIO.save_model_to_json(geo_model, str(path))
-    return path
+    return Path(gp.save_model(geo_model, path=str(path)))
 
 
 def find_identify_subdomains(executable_path: str = "", ogs_bin_dir: str = "") -> Path:

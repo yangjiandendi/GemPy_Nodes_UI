@@ -27,7 +27,7 @@ The application is designed for reproducible geological modelling workflows rath
 - [Node reference](#node-reference)
 - [Input nodes](#input-nodes)
   - [Load Uploaded File](#load-uploaded-file-loaduploadedfile)
-  - [Load GemPy Model JSON](#load-gempy-model-json-loadgempymodeljson)
+  - [Load GemPy Model](#load-gempy-model-loadgempymodeljson)
   - [Load from Kadi](#load-from-kadi-loadkadifile)
 - [Data nodes](#data-nodes)
   - [Merge Tables](#merge-tables-mergetables)
@@ -62,7 +62,7 @@ The application is designed for reproducible geological modelling workflows rath
   - [Extract Voxel Boundaries](#extract-voxel-boundaries-extractvoxelboundaries)
   - [Hex Mesh to Voxel Grid](#hex-mesh-to-voxel-grid-hexmeshtovoxelgrid)
   - [Save Table CSV](#save-table-csv-savetablecsv)
-  - [Save GemPy Model JSON](#save-gempy-model-json-savegempymodeljson)
+  - [Save GemPy Model](#save-gempy-model-savegempymodeljson)
   - [Save Array](#save-array-savearray)
   - [Upload GeoDT Structure Version to Kadi](#upload-geodt-structure-version-to-kadi-uploadgeodtstructureversiontokadi)
   - [Upload File to Kadi](#upload-file-to-kadi-uploadfiletokadi)
@@ -607,20 +607,20 @@ _None._
 | Parameter | Type | Default | Options | Meaning |
 |---|---:|---:|---|---|
 | `file_id` | `file_select` |  |  | Select an uploaded or generated file from the file manager. |
-| `file_type` | `select` | `auto` | `auto, csv, xlsx, json, mesh, vtk, vtp, vtu, vti, stl, ply, obj, raster, tif, tiff, npy` | Controls how the selected file is interpreted. Use auto unless the extension is ambiguous. |
+| `file_type` | `select` | `auto` | `auto, csv, xlsx, json, gempy, mesh, vtk, vtp, vtu, vti, stl, ply, obj, raster, tif, tiff, npy` | Controls how the selected file is interpreted. Use auto unless the extension is ambiguous. |
 | `sheet_name` | `text` |  |  | Excel worksheet name. Leave empty to use the default or first sheet. |
-### Load GemPy Model JSON (`LoadGemPyModelJson`)
+### Load GemPy Model (`LoadGemPyModelJson`)
 
-**Purpose.** Load a complete GemPy GeoModel using GemPy JsonIO. This skips table import, structural-frame setup and interpolation-option setup.
+**Purpose.** Load a GemPy model definition from `.gempy` using `gp.load_model`. Legacy JsonIO `.json` files remain readable.
 
 **Typical use.**
-- Use to restart a workflow from a saved GemPy JsonIO model instead of rebuilding it from tables.
+- Use to restart from a saved model definition instead of rebuilding it from tables. Computed solutions are not part of a `.gempy` archive; run Compute GemPy Model after loading.
 
 **Inputs**
 
 | Port | Kind | Multiple | Meaning |
 |---|---:|:---:|---|
-| `file` | `file` | no | GemPy model JSON, optional |
+| `file` | `file` | no | GemPy model `.gempy` or legacy `.json`, optional |
 
 **Outputs**
 
@@ -632,7 +632,7 @@ _None._
 
 | Parameter | Type | Default | Options | Meaning |
 |---|---:|---:|---|---|
-| `file_id` | `file_select` |  |  | Optional if a file is connected. Use a JsonIO model JSON saved by Save GemPy Model JSON. |
+| `file_id` | `file_select` |  |  | Optional if a file is connected. Select an uploaded `.gempy` or legacy JsonIO `.json` file. |
 ### Load from Kadi (`LoadKadiFile`)
 
 **Purpose.** Download one CSV/XLSX table or PyVista-readable mesh file from a Kadi record.
@@ -1630,13 +1630,13 @@ _None._
 | Parameter | Type | Default | Options | Meaning |
 |---|---:|---:|---|---|
 | `file_name` | `text` | `table.csv` |  | Output or target filename. The node may adjust the extension when required by the mesh type. |
-### Save GemPy Model JSON (`SaveGemPyModelJson`)
+### Save GemPy Model (`SaveGemPyModelJson`)
 
-**Purpose.** Save a complete GemPy GeoModel using GemPy JsonIO.save_model_to_json.
+**Purpose.** Save a GemPy model definition as `.gempy` using `gp.save_model`.
 
 **Typical use.**
-- Use for preserving a complete GemPy model state via GemPy JsonIO.
-- Best used when the model has an explicit `resolution`.
+- Use for preserving and transferring the model definition. Computed solutions must be recomputed after loading.
+- Existing workflow graphs keep the same internal node type; a saved `.json` output filename is automatically changed to `.gempy`.
 
 **Inputs**
 
@@ -1648,15 +1648,14 @@ _None._
 
 | Port | Kind | Multiple | Meaning |
 |---|---:|:---:|---|
-| `file` | `file` | no | GemPy model JSON |
+| `file` | `file` | no | GemPy model `.gempy` |
 | `report` | `report` | no | save report |
 
 **Parameters**
 
 | Parameter | Type | Default | Options | Meaning |
 |---|---:|---:|---|---|
-| `file_name` | `text` | `gempy_model.json` |  | Output or target filename. The node may adjust the extension when required by the mesh type. |
-| `require_explicit_resolution` | `boolean` | `True` |  | Recommended. JsonIO save/load requires a model created with Resolution, not only Refinement. |
+| `file_name` | `text` | `gempy_model.gempy` |  | Download filename; the extension is normalized to `.gempy`. |
 ### Save Array (`SaveArray`)
 
 **Purpose.** Export a NumPy array as .npy or .csv.
