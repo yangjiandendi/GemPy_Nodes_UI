@@ -10,6 +10,7 @@ from .nodes import (
     ComputeGemPyModelNode,
     ConfigureStructuralFrameNode,
     CreateGemPyModelNode,
+    SharedVoxelGridNode,
     ExtractGemPyArrayNode,
     LoadKadiFileNode,
     LoadUploadedFileNode,
@@ -73,6 +74,7 @@ NODE_REGISTRY = {
         ExtractVoxelBoundariesNode,
         SaveTableCsvNode,
         CreateGemPyModelNode,
+        SharedVoxelGridNode,
         ConfigureStructuralFrameNode,
         SetFiniteFaultNode,
         AddSurfacePointsNode,
@@ -348,12 +350,27 @@ NODE_TYPES = [
     },
 
     {
+        "type": "SharedVoxelGrid",
+        "title": "Shared Voxel Grid",
+        "category": "Mesh / Voxel",
+        "description": "Define one world-coordinate voxel origin and spacing for GemPy, clipping, voxelization and merging.",
+        "inputs": [],
+        "outputs": [port("grid", "shared grid", "voxel_grid_spec")],
+        "params": [
+            p("origin", "Grid origin [x,y,z]", "text", "[0, 0, 0]"),
+            p("voxel_size", "Voxel size X / all axes", "text", "2.5"),
+            p("voxel_size_y", "Voxel size Y, optional", "text", ""),
+            p("voxel_size_z", "Voxel size Z, optional", "text", ""),
+        ],
+    },
+    {
         "type": "PyVistaClippedLayerViewer",
         "title": "Clipping Tool",
         "category": "View",
         "description": "Clip either GemPy voxel/layer output or an existing PyVista/VTK mesh with optional shell and DEM/topography meshes, then export the clipped mesh.",
         "inputs": [
             port("geo_model", "computed geo model, optional", "geo_model"),
+            port("shared_grid", "shared grid, optional", "voxel_grid_spec"),
             port("input_mesh", "mesh to clip, optional", "mesh"),
             port("clip_mesh", "clipping shell mesh", "mesh"),
             port("topography_mesh", "DEM/topography mesh", "mesh"),
@@ -597,6 +614,7 @@ NODE_TYPES = [
         "inputs": [
             port("mesh", "mesh", "mesh"),
             port("reference_geo_model", "reference geo model, optional", "geo_model"),
+            port("shared_grid", "shared grid, optional", "voxel_grid_spec"),
         ],
         "outputs": [
             port("voxel_model", "voxel model", "mesh"),
@@ -663,6 +681,7 @@ NODE_TYPES = [
         "description": "Merge several voxel-grid models into one true voxel grid. Inputs with different grid sizes are resampled onto a common target voxel grid before overlap resolution and source-aware reindexing.",
         "inputs": [
             port("voxel_models", "voxel models", "mesh", multiple=True),
+            port("shared_grid", "shared grid, optional", "voxel_grid_spec"),
         ],
         "outputs": [
             port("voxel_model", "merged voxel model", "mesh"),
@@ -724,6 +743,7 @@ NODE_TYPES = [
         "inputs": [
             port("surface_points", "surface points", "table"),
             port("orientations", "orientations", "table"),
+            port("shared_grid", "shared grid, optional", "voxel_grid_spec"),
         ],
         "outputs": [port("geo_model", "geo model", "geo_model")],
         "params": [

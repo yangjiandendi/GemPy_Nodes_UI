@@ -35,6 +35,7 @@ SUPPORTED_NODE_TYPES = {
     "CombineMeshes",
     "OGSIdentifyFullMesh",
     "SaveTableCsv",
+    "SharedVoxelGrid",
     "CreateGemPyModel",
     "ConfigureStructuralFrame",
     "ComputeGemPyModel",
@@ -336,6 +337,12 @@ def _node_code(
         if "report" in outputs:
             lines.append(f"{out('report')} = {{'rows': len({out('table')})}}")
 
+    elif node_type == "SharedVoxelGrid":
+        lines += [
+            f"{out('grid')} = make_shared_grid({_py(params.get('origin', '[0, 0, 0]'))}, {_py(params.get('voxel_size', '2.5'))}, {_py(params.get('voxel_size_y'))}, {_py(params.get('voxel_size_z'))})",
+            f"print({out('grid')})",
+        ]
+
     elif node_type == "CreateGemPyModel":
         surface = _one(inputs, "surface_points")
         orientation = _one(inputs, "orientations")
@@ -353,6 +360,7 @@ def _node_code(
             f"    apply_surface_point_nugget={bool(params.get('apply_surface_point_nugget', True))},",
             f"    surface_point_nugget={float(params.get('surface_point_nugget', 0.01) or 0.01)},",
             f"    working_dir=OUTPUT_DIR,",
+            f"    shared_grid={_one(inputs, 'shared_grid', 'None')},",
             f")",
             f"print({out('geo_model')})",
             f"display(structural_group_summary({out('geo_model')}))",
@@ -773,6 +781,12 @@ def _node_code(
                 f")",
             ]
 
+        shared_grid_source = _one(inputs, "shared_grid", "None")
+        if shared_grid_source != "None":
+            lines.append(
+                f"assert_mesh_on_shared_grid({out('mesh')}, {shared_grid_source}, crinkle={bool(params.get('crinkle', True))})"
+            )
+
         file_variable = out(
             "file",
             f"step_{index:02d}_clipped_mesh_file",
@@ -796,7 +810,7 @@ def _node_code(
             source = f"load_input_file({selected}).get('mesh')"
         file_name = str(params.get("file_name") or "mesh_voxel_model.vtu")
         lines += [
-            f"{out('voxel_model')} = mesh_to_voxel_model({source}, voxel_size={_py(params.get('voxel_size'))}, voxel_size_y={_py(params.get('voxel_size_y'))}, voxel_size_z={_py(params.get('voxel_size_z'))}, target_cells_longest_axis={int(params.get('target_cells_longest_axis', 80) or 80)}, max_voxels={int(params.get('max_voxels', 2000000) or 2000000)}, padding={float(params.get('padding', 0.0) or 0.0)}, voxelization_mode={_py(params.get('voxelization_mode', 'inside_surface'))}, distance_buffer={_py(params.get('distance_buffer'))}, distance_chunk_size={int(params.get('distance_chunk_size', 200000) or 200000)}, source_scalar={_py(params.get('source_scalar', 'auto'))}, output_scalar_name={_py(params.get('output_scalar_name', 'MaterialIDs'))}, inside_tolerance={float(params.get('inside_tolerance', 1e-6) or 1e-6)}, check_surface={bool(params.get('check_surface', False))}, invert_inside={bool(params.get('invert_inside', False))})",
+            f"{out('voxel_model')} = mesh_to_voxel_model({source}, voxel_size={_py(params.get('voxel_size'))}, voxel_size_y={_py(params.get('voxel_size_y'))}, voxel_size_z={_py(params.get('voxel_size_z'))}, target_cells_longest_axis={int(params.get('target_cells_longest_axis', 80) or 80)}, max_voxels={int(params.get('max_voxels', 2000000) or 2000000)}, padding={float(params.get('padding', 0.0) or 0.0)}, voxelization_mode={_py(params.get('voxelization_mode', 'inside_surface'))}, distance_buffer={_py(params.get('distance_buffer'))}, distance_chunk_size={int(params.get('distance_chunk_size', 200000) or 200000)}, source_scalar={_py(params.get('source_scalar', 'auto'))}, output_scalar_name={_py(params.get('output_scalar_name', 'MaterialIDs'))}, inside_tolerance={float(params.get('inside_tolerance', 1e-6) or 1e-6)}, check_surface={bool(params.get('check_surface', False))}, invert_inside={bool(params.get('invert_inside', False))}, shared_grid={_one(inputs, 'shared_grid', 'None')})",
             f"{out('voxel_grid')} = {out('voxel_model')}",
             f"{out('file')} = save_mesh({out('voxel_model')}, OUTPUT_DIR / {_py(file_name)})",
             f"{out('report')} = {{'n_cells': int({out('voxel_model')}.n_cells), 'n_points': int({out('voxel_model')}.n_points), 'file': str({out('file')})}}",
@@ -821,7 +835,7 @@ def _node_code(
         models = _many(inputs, "voxel_models")
         file_name = str(params.get("file_name") or "merged_voxel_model.vtu")
         lines += [
-            f"{out('voxel_model')} = merge_voxel_models([{', '.join(models)}], cell_data_name={_py(params.get('cell_data_name', 'auto'))}, output_scalar_name={_py(params.get('output_scalar_name', 'MaterialIDs'))}, reindex_scope={_py(params.get('reindex_scope', 'source_and_value'))}, reindex_start_id={int(params.get('reindex_start_id', 1) or 1)}, first_input_wins={bool(params.get('first_input_wins', True))}, target_voxel_size_mode={_py(params.get('target_voxel_size_mode', 'smallest_input'))}, resample_to_target_grid={bool(params.get('resample_to_target_grid', True))}, voxel_size={_py(params.get('voxel_size'))}, voxel_size_y={_py(params.get('voxel_size_y'))}, voxel_size_z={_py(params.get('voxel_size_z'))}, max_merged_voxels={int(params.get('max_merged_voxels', 2000000) or 2000000)})",
+            f"{out('voxel_model')} = merge_voxel_models([{', '.join(models)}], cell_data_name={_py(params.get('cell_data_name', 'auto'))}, output_scalar_name={_py(params.get('output_scalar_name', 'MaterialIDs'))}, reindex_scope={_py(params.get('reindex_scope', 'source_and_value'))}, reindex_start_id={int(params.get('reindex_start_id', 1) or 1)}, first_input_wins={bool(params.get('first_input_wins', True))}, target_voxel_size_mode={_py(params.get('target_voxel_size_mode', 'smallest_input'))}, resample_to_target_grid={bool(params.get('resample_to_target_grid', True))}, voxel_size={_py(params.get('voxel_size'))}, voxel_size_y={_py(params.get('voxel_size_y'))}, voxel_size_z={_py(params.get('voxel_size_z'))}, max_merged_voxels={int(params.get('max_merged_voxels', 2000000) or 2000000)}, shared_grid={_one(inputs, 'shared_grid', 'None')})",
             f"{out('voxel_grid')} = {out('voxel_model')}",
             f"{out('file')} = save_mesh({out('voxel_model')}, OUTPUT_DIR / {_py(file_name)})",
             f"{out('report')} = {{'n_cells': int({out('voxel_model')}.n_cells), 'input_count': {len(models)}}}",

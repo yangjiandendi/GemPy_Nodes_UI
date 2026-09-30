@@ -329,6 +329,81 @@ def auto_extent_from_tables(surface_points: pd.DataFrame, orientations: pd.DataF
     ]
 
 
+def make_shared_grid(origin: Any, voxel_size: Any, voxel_size_y: Any = None, voxel_size_z: Any = None) -> dict:
+    parsed_origin = parse_json(origin, origin)
+    dx = float(voxel_size)
+    spacing = [
+        dx,
+        float(dx if voxel_size_y in (None, "") else voxel_size_y),
+        float(dx if voxel_size_z in (None, "") else voxel_size_z),
+    ]
+    if not isinstance(parsed_origin, (list, tuple)) or len(parsed_origin) != 3:
+        raise ValueError("Shared grid origin must contain three values.")
+    parsed_origin = [float(value) for value in parsed_origin]
+    if not np.all(np.isfinite(parsed_origin + spacing)) or any(value <= 0 for value in spacing):
+        raise ValueError("Shared grid requires finite origin and positive voxel sizes.")
+    return {"origin": parsed_origin, "spacing": spacing}
+
+
+def snap_to_shared_grid(bounds: Any, shared_grid: dict) -> tuple[list[float], list[int]]:
+    import math
+    if len(bounds) != 6:
+        raise ValueError("Shared grid bounds must contain six values.")
+    extent, resolution = [], []
+    for axis in range(3):
+        anchor = float(shared_grid["origin"][axis])
+        step = float(shared_grid["spacing"][axis])
+        lower = float(bounds[2 * axis])
+        upper = float(bounds[2 * axis + 1])
+        if not math.isfinite(lower) or not math.isfinite(upper) or upper < lower:
+            raise ValueError("Shared grid received invalid model bounds.")
+        low = (lower - anchor) / step
+        high = (upper - anchor) / step
+        if abs(low - round(low)) < 1e-9:
+            low = float(round(low))
+        if abs(high - round(high)) < 1e-9:
+            high = float(round(high))
+        first = math.floor(low)
+        last = max(math.ceil(high), first + 1)
+        extent.extend([anchor + first * step, anchor + last * step])
+        resolution.append(last - first)
+    return extent, resolution
+
+
+def assert_mesh_on_shared_grid(mesh: Any, shared_grid: dict, crinkle: bool = True) -> None:
+    if not crinkle:
+        raise ValueError("Shared-grid clipping requires crinkle=True.")
+    centers = np.asarray(mesh.cell_centers().points, dtype=float).reshape((-1, 3))
+    if centers.size:
+        origin = np.asarray(shared_grid["origin"], dtype=float)
+        spacing = np.asarray(shared_grid["spacing"], dtype=float)
+        indices = (centers - origin) / spacing - 0.5
+        if not np.all(np.isfinite(indices)) or not np.all(np.abs(indices - np.rint(indices)) <= 1e-6):
+            raise ValueError("Clipped mesh is not aligned with the shared grid.")
+    count = int(mesh.n_cells)
+    if count:
+        types = np.asarray(mesh.celltypes)
+        cells = np.asarray(mesh.cells)
+        points = np.asarray(mesh.points, dtype=float)
+        if types.size != count or not np.all(np.isin(types, (11, 12))) or cells.size != count * 9:
+            raise ValueError("Clipped mesh contains non-voxel cells.")
+        ids = cells.reshape((-1, 9))
+        if not np.all(ids[:, 0] == 8):
+            raise ValueError("Clipped mesh contains non-hexahedral cells.")
+        for start in range(0, count, 20_000):
+            corners = points[ids[start:start + 20_000, 1:]]
+            low = np.min(corners, axis=1)
+            high = np.max(corners, axis=1)
+            if not np.all(np.abs((high - low) / spacing - 1) <= 1e-6):
+                raise ValueError("Clipped mesh has cells with a different voxel size.")
+            corner_positions = (corners - low[:, None, :]) / spacing
+            if not np.all(np.minimum(np.abs(corner_positions), np.abs(corner_positions - 1)) <= 1e-6):
+                raise ValueError("Clipped mesh contains distorted hexahedral cells.")
+            edge_indices = (low - origin) / spacing
+            if not np.all(np.abs(edge_indices - np.rint(edge_indices)) <= 1e-6):
+                raise ValueError("Clipped mesh has cell corners outside the shared grid.")
+
+
 def create_gempy_model(
     surface_points: pd.DataFrame,
     orientations: pd.DataFrame,
@@ -342,6 +417,7 @@ def create_gempy_model(
     apply_surface_point_nugget: bool = True,
     surface_point_nugget: float = 0.01,
     working_dir: Path = Path("outputs"),
+    shared_grid: Any = None,
 ):
     import gempy as gp
     surface = _normalize_gempy_table(surface_points, "surface")
@@ -356,6 +432,9 @@ def create_gempy_model(
         if not isinstance(final_extent, (list, tuple)) or len(final_extent) != 6:
             raise ValueError("extent must contain six values.")
         final_extent = [float(value) for value in final_extent]
+
+    if shared_grid is not None:
+        final_extent, resolution = snap_to_shared_grid(final_extent, shared_grid)
 
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
@@ -2256,6 +2335,7 @@ def mesh_to_voxel_model(
     inside_tolerance: float = 1e-6,
     check_surface: bool = False,
     invert_inside: bool = False,
+    shared_grid: Any = None,
 ):
     import pyvista as pv
     from scipy.spatial import cKDTree
@@ -2274,11 +2354,20 @@ def mesh_to_voxel_model(
     sy = as_float(voxel_size_y, sx) or sx
     sz = as_float(voxel_size_z, sx) or sx
     spacing = np.asarray([sx, sy, sz], dtype=float)
+    if shared_grid is not None:
+        spacing = np.asarray(shared_grid["spacing"], dtype=float)
     if mode == "distance_to_surface":
         padding = max(float(padding), as_float(distance_buffer, 0.75*float(np.min(spacing))))
     lower = np.asarray([bounds[0], bounds[2], bounds[4]], dtype=float) - float(padding)
     upper = np.asarray([bounds[1], bounds[3], bounds[5]], dtype=float) + float(padding)
-    counts = np.maximum(np.ceil((upper-lower)/spacing).astype(int), 1)
+    if shared_grid is not None:
+        snapped, snapped_counts = snap_to_shared_grid(
+            [lower[0], upper[0], lower[1], upper[1], lower[2], upper[2]], shared_grid
+        )
+        lower = np.asarray(snapped[::2], dtype=float)
+        counts = np.asarray(snapped_counts, dtype=int)
+    else:
+        counts = np.maximum(np.ceil((upper-lower)/spacing).astype(int), 1)
     if int(np.prod(counts)) > int(max_voxels):
         raise ValueError(f"Candidate voxel count {int(np.prod(counts)):,} exceeds max_voxels={int(max_voxels):,}.")
     grid = pv.ImageData(dimensions=tuple((counts+1).tolist()), spacing=tuple(spacing.tolist()), origin=tuple(lower.tolist()))
@@ -2420,6 +2509,7 @@ def merge_voxel_models(
     voxel_size_y: Any = None,
     voxel_size_z: Any = None,
     max_merged_voxels: int = 2_000_000,
+    shared_grid: Any = None,
 ):
     import pyvista as pv
     if not meshes:
@@ -2458,6 +2548,9 @@ def merge_voxel_models(
         else:
             spacing = np.min(spacing_rows, axis=0)
 
+    if shared_grid is not None:
+        spacing = np.asarray(shared_grid["spacing"], dtype=float)
+
     all_bounds = np.asarray([mesh.bounds for mesh in meshes], dtype=float)
     union_low = np.asarray([
         np.min(all_bounds[:, 0]),
@@ -2465,7 +2558,8 @@ def merge_voxel_models(
         np.min(all_bounds[:, 4]),
     ], dtype=float)
     first_low = np.asarray([meshes[0].bounds[0], meshes[0].bounds[2], meshes[0].bounds[4]], dtype=float)
-    origin = first_low + np.floor((union_low - first_low) / spacing) * spacing
+    origin = (np.asarray(shared_grid["origin"], dtype=float) if shared_grid is not None
+              else first_low + np.floor((union_low - first_low) / spacing) * spacing)
 
     source_entries = []
     value_order = []
@@ -2479,6 +2573,13 @@ def merge_voxel_models(
             )
         values = np.asarray(mesh.cell_data[scalar]) if scalar else np.ones(mesh.n_cells)
         entries_for_source = []
+        direct_aligned = False
+        if shared_grid is not None:
+            try:
+                assert_mesh_on_shared_grid(mesh, shared_grid)
+                direct_aligned = True
+            except (ValueError, AttributeError):
+                pass
         for local, (center, value) in enumerate(zip(centers, values)):
             value_python = value.item() if hasattr(value, "item") else value
             value_key = str(value_python)
@@ -2487,7 +2588,9 @@ def merge_voxel_models(
                 seen_map_keys.add(map_key)
                 value_order.append(map_key)
 
-            if resample_to_target_grid:
+            if direct_aligned:
+                target_keys = [tuple(np.rint((center - origin) / spacing - 0.5).astype(int).tolist())]
+            elif resample_to_target_grid:
                 try:
                     points = np.asarray(mesh.get_cell(int(local)).points, dtype=float)
                     bounds = np.asarray([

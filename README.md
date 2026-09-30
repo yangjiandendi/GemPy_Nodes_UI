@@ -10,6 +10,12 @@ The application is designed for reproducible geological modelling workflows rath
 
 ---
 
+## Shared voxel grid
+
+Add **Shared Voxel Grid** and set a world-coordinate origin `[x,y,z]` and voxel sizes X/Y/Z. Connect its `grid` output to **Create GemPy Model**, **Clipping Tool**, every **Mesh to Voxel Model**, and **Merge Voxel Models** that should share the lattice. Create GemPy Model expands its selected extent to grid edges and calculates the required integer resolution; its previous resolution setting is overridden while this connection is present. Clipping Tool requires `crinkle=True` and checks that every output cell remains a full voxel on the shared grid. Merge uses a direct cell-index path for already aligned inputs and resamples other inputs. Leave the new ports unconnected to retain the existing behavior.
+
+For example, with padding set to zero, origin `[0,0,0]` and size `2.5` give X centers `1.25, 3.75, ...`. Model bounds `0–10` become four X cells and bounds `1–11` snap to `0–12.5` with five X cells. The overlap is now on identical grid positions. Connect the same grid to Mesh to Voxel even when `reference_geo_model` is connected; the latter provides only spacing in the older workflow.
+
 ## Table of contents
 
 - [Relationship to GemPy](#relationship-to-gempy)

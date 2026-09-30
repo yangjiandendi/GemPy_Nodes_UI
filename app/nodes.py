@@ -17,6 +17,7 @@ from .models import NodeExecutionError, RuntimeValue
 from .runtime_store import put_runtime_object
 from .storage import get_file_path, make_runtime_path, register_output_file
 from .schema_checks import geological_table_report, validate_or_raise
+from .shared_grid import make_shared_grid, snap_bounds, centers_are_aligned, voxel_cells_are_aligned
 
 
 def _single(inputs: Dict[str, Any], name: str) -> RuntimeValue:
@@ -2337,6 +2338,37 @@ def _patch_gempy_stringarray_compat() -> None:
         pass
 
 
+class SharedVoxelGridNode(BaseNode):
+    type_name = "SharedVoxelGrid"
+
+    def run(self, inputs: Dict[str, Any], params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, RuntimeValue]:
+        try:
+            origin = _parse_json(params.get("origin"), [0, 0, 0])
+            dx = float(params.get("voxel_size"))
+            dy_param = params.get("voxel_size_y")
+            dz_param = params.get("voxel_size_z")
+            dy = float(dx if dy_param in (None, "") else dy_param)
+            dz = float(dx if dz_param in (None, "") else dz_param)
+            grid = make_shared_grid(origin, [dx, dy, dz])
+        except (TypeError, ValueError) as exc:
+            raise NodeExecutionError(f"Invalid shared voxel grid: {exc}") from exc
+        return {"grid": RuntimeValue("voxel_grid_spec", grid, name="shared voxel grid", preview=grid)}
+
+
+def _shared_grid_input(inputs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    rv = inputs.get("shared_grid")
+    if isinstance(rv, list):
+        rv = rv[0] if rv else None
+    if rv is None:
+        return None
+    if rv.kind != "voxel_grid_spec":
+        raise NodeExecutionError(f"Expected shared voxel grid, got {rv.kind}.")
+    try:
+        return make_shared_grid(rv.value["origin"], rv.value["spacing"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise NodeExecutionError(f"Invalid shared voxel grid: {exc}") from exc
+
+
 class CreateGemPyModelNode(BaseNode):
     type_name = "CreateGemPyModel"
 
@@ -2390,6 +2422,15 @@ class CreateGemPyModelNode(BaseNode):
                 raise NodeExecutionError("extent must be a JSON list with 6 numbers: [x_min,x_max,y_min,y_max,z_min,z_max]")
             extent = [float(v) for v in extent]
 
+        shared_grid = _shared_grid_input(inputs)
+        requested_extent = list(extent)
+        if shared_grid is not None:
+            try:
+                extent, resolution = snap_bounds(extent, shared_grid)
+            except ValueError as exc:
+                raise NodeExecutionError(str(exc)) from exc
+            extent_source += "_aligned_to_shared_grid"
+
         sp_path = make_runtime_path("surface_points", ".csv")
         op_path = make_runtime_path("orientations", ".csv")
         sp_df.to_csv(sp_path, index=False)
@@ -2435,6 +2476,8 @@ class CreateGemPyModelNode(BaseNode):
         preview = {
             "project_name": project_name,
             "extent": extent,
+            "requested_extent": requested_extent,
+            "shared_grid": shared_grid,
             "extent_source": extent_source,
             "auto_extent_from_data": auto_extent_enabled,
             "extent_user_overridden": extent_user_overridden,
@@ -5225,6 +5268,9 @@ class PyVistaClippedLayerViewerNode(BaseNode):
     type_name = "PyVistaClippedLayerViewer"
 
     def run(self, inputs: Dict[str, Any], params: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, RuntimeValue]:
+        shared_grid = _shared_grid_input(inputs)
+        if shared_grid is not None and not _as_bool(params.get("crinkle"), True):
+            raise NodeExecutionError("Shared-grid clipping requires crinkle=True to preserve whole voxel cells.")
         clip_file_id = params.get("clip_mesh_file_id") or ""
         top_id = params.get("topography_mesh_file_id") or ""
         clip_path, clip_file_id_for_preview, clip_input_preview = _resolve_optional_mesh_input(
@@ -5299,6 +5345,13 @@ class PyVistaClippedLayerViewerNode(BaseNode):
             popup_url = f"/api/pyvista/gempy-clipped-layers/{token}?{query}"
             pyvista_button_label = "Open Clipped Voxel/Layers 3D Popup"
             pyvista_note = "DEM/topography and shell meshes are optional. DEM is used for clipping by default and is not shown unless 'Show DEM/topography mesh' is enabled."
+
+        if shared_grid is not None:
+            centers = np.asarray(mesh.cell_centers().points, dtype=float)
+            if not centers_are_aligned(centers, shared_grid) or not voxel_cells_are_aligned(mesh, shared_grid):
+                raise NodeExecutionError("Clipped cells are not regular voxels on the connected shared grid. Check GemPy extent/resolution and keep crinkle enabled.")
+            mesh_meta["shared_grid"] = shared_grid
+            mesh_meta["grid_aligned"] = True
 
         # If a mesh input is used, prefer its best scalar. If a GeoModel is used,
         # keep the configured cell_data_name.
@@ -6823,6 +6876,7 @@ def _structured_voxel_axes_from_bounds(
     spacing: tuple[float, float, float],
     padding: float = 0.0,
     max_voxels: int = 2000000,
+    shared_grid: Optional[Dict[str, Any]] = None,
 ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], List[float]]:
     b = [float(v) for v in bounds]
     pad = float(padding or 0.0)
@@ -6832,10 +6886,17 @@ def _structured_voxel_axes_from_bounds(
     dx, dy, dz = [float(v) for v in spacing]
     if dx <= 0 or dy <= 0 or dz <= 0:
         raise NodeExecutionError("Voxel size must be positive.")
+    aligned_counts = None
+    if shared_grid is not None:
+        try:
+            aligned, aligned_counts = snap_bounds([xmin, xmax, ymin, ymax, zmin, zmax], shared_grid)
+        except ValueError as exc:
+            raise NodeExecutionError(str(exc)) from exc
+        xmin, xmax, ymin, ymax, zmin, zmax = aligned
 
-    nx = int(np.ceil((xmax - xmin) / dx))
-    ny = int(np.ceil((ymax - ymin) / dy))
-    nz = int(np.ceil((zmax - zmin) / dz))
+    nx = aligned_counts[0] if aligned_counts is not None else int(np.ceil((xmax - xmin) / dx))
+    ny = aligned_counts[1] if aligned_counts is not None else int(np.ceil((ymax - ymin) / dy))
+    nz = aligned_counts[2] if aligned_counts is not None else int(np.ceil((zmax - zmin) / dz))
     nx, ny, nz = max(nx, 1), max(ny, 1), max(nz, 1)
     total = nx * ny * nz
     if total > int(max_voxels):
@@ -6924,16 +6985,21 @@ class MeshToVoxelModelNode(BaseNode):
         clean_output = _as_bool(params.get("clean_output"), True)
         invert = _as_bool(params.get("invert_inside"), False)
 
-        spacing = _infer_voxel_spacing(
-            mesh,
-            dx=dx,
-            dy=dy,
-            dz=dz,
-            reference_geo_model=reference_geo_model,
-            target_cells_longest_axis=target_axis,
-        )
-        voxel_spacing = (spacing[0], spacing[1], spacing[2])
-        spacing_source = spacing[3]
+        shared_grid = _shared_grid_input(inputs)
+        if shared_grid is not None:
+            voxel_spacing = tuple(shared_grid["spacing"])
+            spacing_source = "shared_grid"
+        else:
+            spacing = _infer_voxel_spacing(
+                mesh,
+                dx=dx,
+                dy=dy,
+                dz=dz,
+                reference_geo_model=reference_geo_model,
+                target_cells_longest_axis=target_axis,
+            )
+            voxel_spacing = (spacing[0], spacing[1], spacing[2])
+            spacing_source = spacing[3]
         reference_surface = None
         if voxelization_mode in {"distance_to_surface", "surface_distance", "distance"} and "thickening_reference_points" in mesh.field_data:
             reference_surface = pv.PolyData(
@@ -6967,6 +7033,7 @@ class MeshToVoxelModelNode(BaseNode):
                 voxel_spacing,
                 padding=effective_padding,
                 max_voxels=int(max_voxels),
+                shared_grid=shared_grid,
             )
             xs, ys, zs = axis_values
             nx, ny, nz = len(xs), len(ys), len(zs)
@@ -7026,6 +7093,7 @@ class MeshToVoxelModelNode(BaseNode):
                 voxel_spacing,
                 padding=effective_padding,
                 max_voxels=int(max_voxels),
+                shared_grid=shared_grid,
             )
             xs, ys, zs = axis_values
             nx, ny, nz = len(xs), len(ys), len(zs)
@@ -7127,6 +7195,7 @@ class MeshToVoxelModelNode(BaseNode):
             **source_meta,
             "voxel_size": [float(v) for v in voxel_spacing],
             "voxel_size_source": spacing_source,
+            "shared_grid": shared_grid,
             "voxelization_mode": voxelization_mode,
             "distance_buffer": float(distance_buffer) if distance_buffer is not None else None,
             "distance_reference": "thicken_centre_surface" if reference_surface is not None else "input_surface",
@@ -7384,6 +7453,10 @@ def _voxel_grid_entries(
         return [], {"input_cells": 0, "entries": 0, "expanded_cells": 0, "max_targets_per_cell": 0}
     if source_spacing is None:
         source_spacing = _infer_voxel_spacing_from_grid(mesh) or spacing
+    direct_aligned = bool(
+        centers_are_aligned(centers, {"origin": origin, "spacing": spacing})
+        and voxel_cells_are_aligned(mesh, {"origin": origin, "spacing": spacing})
+    )
 
     if scalar_name in getattr(mesh, "cell_data", {}):
         vals = np.asarray(mesh.cell_data[scalar_name])
@@ -7399,7 +7472,9 @@ def _voxel_grid_entries(
     max_targets_per_cell = 0
 
     for idx, center in enumerate(centers):
-        if resample_to_target_grid:
+        if direct_aligned:
+            target_keys = [tuple(int(v) for v in np.rint((center - np.asarray(origin)) / np.asarray(spacing) - 0.5))]
+        elif resample_to_target_grid:
             bounds = _cell_bounds_safe(mesh, idx, center, source_spacing)
             target_keys = _target_indices_covered_by_bounds(bounds, spacing, origin, center)
         else:
@@ -7435,6 +7510,7 @@ def _voxel_grid_entries(
         "expanded_cells": int(expanded_cells),
         "max_targets_per_cell": int(max_targets_per_cell),
         "source_spacing": [float(v) for v in source_spacing],
+        "direct_aligned": direct_aligned,
     }
     return entries, report
 
@@ -7724,6 +7800,10 @@ class MergeVoxelModelsNode(BaseNode):
             mode=target_mode,
             manual_spacing=manual_spacing,
         )
+        shared_grid = _shared_grid_input(inputs)
+        if shared_grid is not None:
+            spacing = tuple(shared_grid["spacing"])
+            spacing_source = "shared_grid"
 
         all_bounds = np.asarray([m.bounds for m in meshes], dtype=float)
         union_bounds = [
@@ -7731,7 +7811,7 @@ class MergeVoxelModelsNode(BaseNode):
             float(np.min(all_bounds[:, 2])), float(np.max(all_bounds[:, 3])),
             float(np.min(all_bounds[:, 4])), float(np.max(all_bounds[:, 5])),
         ]
-        origin = _aligned_origin_from_union(meshes[0].bounds, union_bounds, spacing)
+        origin = tuple(shared_grid["origin"]) if shared_grid is not None else _aligned_origin_from_union(meshes[0].bounds, union_bounds, spacing)
 
         source_entries: List[List[tuple[tuple[int, int, int], Any, str, Dict[str, Any]]]] = []
         scalar_selection_report = []
@@ -7904,6 +7984,7 @@ class MergeVoxelModelsNode(BaseNode):
             "voxel_size_source": spacing_source,
             "input_spacing_report": spacing_report,
             "origin": [float(v) for v in origin],
+            "shared_grid": shared_grid,
             "fallback_input_scalar": fallback_scalar,
             "output_scalar": output_scalar,
             "output_scalar_note": "Selected scalar values are reindexed to consecutive integers. Default source_and_value keeps source-based ID separation; grid-size mismatch is handled by resampling input cells to the target grid.",
