@@ -293,7 +293,7 @@ PY
 From the repository root:
 
 ```bash
-python -m uvicorn app.main:app --reload
+python -m uvicorn app.main:app
 ```
 
 Open the local web interface:
@@ -508,6 +508,9 @@ Select connected nodes that form a repeated workflow, create a workflow/template
 ## Execution, caching and reproducibility
 
 The graph executor uses node IDs, node parameters and upstream inputs to decide whether a result can be reused.
+Results are stored in the server process memory. There is no configured cache size limit or automatic eviction; available RAM is the practical limit. Restarting the server or using `Clear execution cache` removes these results. Adding a downstream node should reuse unchanged upstream results while the server stays running.
+
+The Run Log `Cache` column shows whether a node reused its result, its inputs or settings changed, or no result was present in memory. The result panel also reports when the server cache was reset between runs.
 
 - A node marked `queued` is waiting to run.
 - A node marked `running` is currently executing.

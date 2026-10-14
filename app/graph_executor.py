@@ -30,6 +30,7 @@ class GraphExecutor:
         self.node_meta = {n["type"]: n for n in NODE_TYPES}
         # (node_id, signature) -> {"outputs": Dict[str, RuntimeValue], "result": descriptor}
         self._cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._cache_generation = uuid.uuid4().hex
         self._progress_lock = threading.Lock()
         self._progress: Dict[str, Any] = {
             "state": "idle",
@@ -162,6 +163,7 @@ class GraphExecutor:
     def clear_cache(self) -> int:
         count = len(self._cache)
         self._cache.clear()
+        self._cache_generation = uuid.uuid4().hex
         return count
 
     def execute(self, graph: GraphRequest) -> Dict[str, Any]:
@@ -255,7 +257,6 @@ class GraphExecutor:
                     input_map[edge.to_port] = runtime[key]
                 input_fingerprints.append({
                     "input_order": input_order,
-                    "edge_id": edge.id,
                     "from_node": edge.from_node,
                     "from_port": edge.from_port,
                     "to_port": edge.to_port,
@@ -266,6 +267,11 @@ class GraphExecutor:
             signatures[node_id] = signature
             cache_key = (node_id, signature)
             cached = self._cache.get(cache_key)
+            cache_miss_reason = None if cached is not None else (
+                "inputs_or_parameters_changed"
+                if any(key[0] == node_id for key in self._cache)
+                else "no_result_in_memory"
+            )
             node_start = time.perf_counter()
             self._set_progress(
                 state="running",
@@ -335,6 +341,7 @@ class GraphExecutor:
                 result = {
                     "ok": True,
                     "cached": False,
+                    "cache_miss_reason": cache_miss_reason,
                     "duration_ms": duration_ms,
                     "signature": signature,
                     "type": node.type,
@@ -363,6 +370,7 @@ class GraphExecutor:
                     "title": self.node_meta[node.type]["title"],
                     "type": node.type,
                     "status": "done",
+                    "cache_miss_reason": cache_miss_reason,
                     "duration_ms": duration_ms,
                     "signature": signature,
                 })
@@ -506,6 +514,7 @@ class GraphExecutor:
             "ok": ok,
             "failed_node_id": failed_node_id,
             "graph_hash": graph_hash,
+            "cache_generation": self._cache_generation,
             "node_count": len(graph.nodes),
             "edge_count": len(graph.edges),
             "order": order,
@@ -522,9 +531,8 @@ class GraphExecutor:
             "node_id": node.id,
             "type": node.type,
             "params": self._normalize_for_json(node.params),
-            # Keep the real incoming-edge order.  This is critical for nodes with
-            # multiple inputs such as MergeTables: changing the concat order must
-            # invalidate the cache, otherwise an old merged table can be reused.
+            # Keep incoming-edge order for multiple-input nodes, but exclude edge
+            # UUIDs: reconnecting the same ports does not change the computation.
             "inputs": input_fingerprints,
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)

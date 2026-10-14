@@ -933,7 +933,7 @@ function nodeStatusLabel(nodeId) {
   if (s.status === 'done') return `${s.duration_ms ?? 0} ms`;
   if (s.status === 'cached') return 'cached';
   if (s.status === 'failed') return 'failed';
-  if (s.status === 'queued') return 'queued';
+  if (s.status === 'queued') return state.nodeResults[nodeId]?.ok ? 'checking cache' : 'queued';
   if (s.status === 'running') return 'running';
   if (s.status === 'cancelled') return 'cancelled';
   if (s.status === 'cancelling') return 'stopping';
@@ -3377,6 +3377,7 @@ function upstreamNodeIds(targetNodeId) {
 async function runGraph(scope='selected') {
   const results = el('results');
   results.className = 'results';
+  const previousCacheGeneration = state.lastManifest?.cache_generation || null;
 
   let payload;
   let scopeText;
@@ -3424,15 +3425,16 @@ async function runGraph(scope='selected') {
       nodeIds: payload.nodes.map(n => n.id),
       executedOrder: out.executed_order || [],
       cachedOrder: out.cached_order || [],
+      cacheReset: Boolean(previousCacheGeneration && out.manifest?.cache_generation && previousCacheGeneration !== out.manifest.cache_generation),
     };
+    state.runInProgress = false;
+    stopProgressPolling();
+    setRunButtonsRunning(false);
     renderResultsForSelected();
     renderInspector();
     renderNodes();
     renderRunLog();
     await refreshUploads();
-    state.runInProgress = false;
-    stopProgressPolling();
-    setRunButtonsRunning(false);
   } catch (err) {
     state.lastExecution = null;
     state.lastRunScope = null;
@@ -3484,10 +3486,13 @@ function renderResultsForSelected() {
 function renderRunScopeNotice() {
   const div = document.createElement('div');
   div.className = 'run-scope';
-  if (state.lastRunScope) {
+  if (state.runInProgress) {
+    div.textContent = 'Checking upstream results for reuse. Final cached/executed status appears as each node finishes.';
+  } else if (state.lastRunScope) {
     const ran = state.lastRunScope.executedOrder?.length ?? 0;
     const reused = state.lastRunScope.cachedOrder?.length ?? 0;
-    div.textContent = `Last run: ${state.lastRunScope.scopeText}. Executed ${ran}, reused from cache ${reused}.`;
+    const resetNote = state.lastRunScope.cacheReset ? ' Backend cache was reset since the previous run.' : '';
+    div.textContent = `Last run: ${state.lastRunScope.scopeText}. Executed ${ran}, reused from cache ${reused}.${resetNote}`;
   } else {
     div.textContent = 'This result is from an earlier run.';
   }
@@ -5173,14 +5178,15 @@ function renderRunLog() {
   root.innerHTML = `<div class="run-log-meta"><b>Run</b> ${escapeHtml(runId)}<br><b>Graph hash</b> ${escapeHtml(String(graphHash).slice(0, 16))}${graphHash ? '…' : ''}</div>`;
   const table = document.createElement('table');
   table.className = 'run-log-table';
-  table.innerHTML = '<thead><tr><th>Status</th><th>Node</th><th>Time</th></tr></thead>';
+  table.innerHTML = '<thead><tr><th>Status</th><th>Node</th><th>Cache</th><th>Time</th></tr></thead>';
   const tbody = document.createElement('tbody');
   for (const row of rows) {
     const tr = document.createElement('tr');
     tr.className = row.status || '';
     const status = row.status || '';
     const dur = row.duration_ms !== undefined ? `${row.duration_ms} ms` : '';
-    tr.innerHTML = `<td>${escapeHtml(status)}</td><td title="${escapeHtml(row.node_id || '')}">${escapeHtml(row.title || row.type || row.node_id || '')}</td><td>${escapeHtml(dur)}</td>`;
+    const cacheNote = status === 'cached' ? 'reused' : row.cache_miss_reason === 'inputs_or_parameters_changed' ? 'inputs or settings changed' : row.cache_miss_reason === 'no_result_in_memory' ? 'no result in memory' : '';
+    tr.innerHTML = `<td>${escapeHtml(status)}</td><td title="${escapeHtml(row.node_id || '')}">${escapeHtml(row.title || row.type || row.node_id || '')}</td><td>${escapeHtml(cacheNote)}</td><td>${escapeHtml(dur)}</td>`;
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
